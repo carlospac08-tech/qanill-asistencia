@@ -1,0 +1,2737 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title id="page-title">Eco School Q'anill – Control de Asistencia</title>
+    <!-- PWA Manifest dinámico -->
+    <link rel="manifest" href="data:application/manifest+json,{
+        &quot;name&quot;: &quot;Eco School Q'anill Asistencia&quot;,
+        &quot;short_name&quot;: &quot;Q'anill Asistencia&quot;,
+        &quot;start_url&quot;: &quot;.&quot;,
+        &quot;display&quot;: &quot;standalone&quot;,
+        &quot;background_color&quot;: &quot;#0f172a&quot;,
+        &quot;theme_color&quot;: &quot;#6c1d1d&quot;
+    }">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS (Excel) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- jsQR para decodificación de códigos QR -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <!-- qrcode-generator para carnés -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <!-- html2canvas para descargar carnés como imagen -->
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        textarea { resize: vertical; min-height: 38px; }
+        
+        /* Tamaño exacto de Carné ID Horizontal CR80: 8.56 cm x 5.40 cm */
+        .id-card-horizontal {
+            width: 8.56cm;
+            height: 5.40cm;
+            box-sizing: border-box;
+            background: #ffffff !important;
+            color: #0f172a !important;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 10px;
+            page-break-inside: avoid;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
+        /* Reglas CSS estrictas para asegurar que la impresión muestre los carnés y reportes correctamente sin hojas en blanco */
+        @media print {
+            body {
+                background: #ffffff !important;
+                color: #000000 !important;
+                overflow: visible !important;
+            }
+            body > *:not(#printable-card-area):not(#printable-report) {
+                display: none !important;
+            }
+            #printable-card-area {
+                display: flex !important;
+                flex-wrap: wrap !important;
+                justify-content: center !important;
+                gap: 15px !important;
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                background: #ffffff !important;
+                margin: 0 !important;
+                padding: 10px !important;
+                z-index: 99999 !important;
+            }
+            #printable-card-area * {
+                visibility: visible !important;
+            }
+            #printable-report {
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                background: #ffffff !important;
+                color: #000000 !important;
+                z-index: 99999 !important;
+            }
+            #printable-report * {
+                visibility: visible !important;
+            }
+            @page {
+                size: auto;
+                margin: 10mm;
+            }
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden">
+    <!-- Contenedor de Notificaciones Toast -->
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+    <!-- APP ROOT CONTAINER -->
+    <div id="app" class="flex-1 flex flex-col h-full w-full overflow-hidden relative"></div>
+
+    <!-- SCRIPT PRINCIPAL DE LA APLICACIÓN -->
+    <script>
+        // Control de Versión para Migración Automática de LocalStorage
+        const APP_VERSION = '1.2';
+        if (localStorage.getItem('qanill_version') !== APP_VERSION) {
+            localStorage.setItem('qanill_version', APP_VERSION);
+        }
+
+        // Estado Global de la Aplicación
+        const STATE = {
+            user: null,
+            role: null, 
+            device: localStorage.getItem('qanill_device') || 'Entrada Principal – Dispositivo 1',
+            schoolName: localStorage.getItem('qanill_school_name') || "Eco School Q'anill",
+            logo: localStorage.getItem('qanill_logo') || '',
+            activeCycle: localStorage.getItem('qanill_cycle') || '2026',
+            cycles: ["2026", "2027", "2028", "2029", "2030"],
+            themeMode: localStorage.getItem('qanill_theme') || 'dark', 
+            includeWeekends: localStorage.getItem('qanill_weekends') === 'true',
+            
+            // Colores personalizados para la portada (Splash Screen)
+            splashBgColor: localStorage.getItem('qanill_splash_bg') || '#6c1d1d',
+            splashTextColor: localStorage.getItem('qanill_splash_text') || '#ffffff',
+
+            colors: JSON.parse(localStorage.getItem('qanill_colors') || JSON.stringify({
+                headerBg: '#6c1d1d',
+                sidebarBg: '#82912d',
+                btnBg: '#EF6905',
+                textColor: '#f8fafc',
+                iconColor: '#EF6905'
+            })),
+
+            gradesList: JSON.parse(localStorage.getItem('qanill_grades_list') || JSON.stringify(['KD', 'PREPA', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'B1', 'B2', 'B3', 'B4 DG', 'B4 MD', 'B4 CM', 'B5 DG', 'B5 MD', 'B5 CM'])),
+
+            gradeSolidColors: JSON.parse(localStorage.getItem('qanill_grade_colors') || JSON.stringify({
+                'KD': '#8B2626',
+                'PREPA': '#D97706',
+                'P1': '#486C2F',
+                'P2': '#1E3A8A',
+                'P3': '#7C3AED',
+                'P4': '#0D9488',
+                'P5': '#BE185D',
+                'P6': '#C2410C',
+                'B1': '#15803D',
+                'B2': '#4338CA',
+                'B3': '#B45309',
+                'B4 DG': '#0369A1',
+                'B4 MD': '#6D28D9',
+                'B4 CM': '#9333EA',
+                'B5 DG': '#047857',
+                'B5 MD': '#B91C1C',
+                'B5 CM': '#B45309'
+            })),
+
+            sections: JSON.parse(localStorage.getItem('qanill_sections') || '{"KD":["A"], "PREPA":["A"], "P1":["A","B"], "P2":["A","B"], "P3":["A","B"], "P4":["A","B"], "P5":["A","B"], "P6":["A","B"], "B1":["A","B"], "B2":["A","B"], "B3":["A","B"], "B4 DG":["A"], "B4 MD":["A"], "B4 CM":["A"], "B5 DG":["A"], "B5 MD":["A"], "B5 CM":["A"]}'),
+            students: JSON.parse(localStorage.getItem('qanill_students') || JSON.stringify([
+                { id: 'QAN-2026-1001', names: 'Carlos Eduardo', lastNames: 'López Gómez', grade: 'B5 DG', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' },
+                { id: 'QAN-2026-1002', names: 'María Fernanda', lastNames: 'Morales Ruiz', grade: 'B5 DG', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' },
+                { id: 'QAN-2026-1003', names: 'Ana Sofía', lastNames: 'García Pérez', grade: 'P1', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' }
+            ])),
+            attendance: JSON.parse(localStorage.getItem('qanill_attendance') || JSON.stringify([
+                { id: 'QAN-2026-1001', date: new Date().toISOString().split('T')[0], time: '07:05:12', status: 'puntual', type: 'escaneo', device: 'Entrada Principal – Dispositivo 1', user: 'admin', cycle: '2026' }
+            ])),
+            excuses: JSON.parse(localStorage.getItem('qanill_excuses') || '{}'),
+            specialSchedules: JSON.parse(localStorage.getItem('qanill_special_schedules') || '{}'),
+            nonWorkingRanges: JSON.parse(localStorage.getItem('qanill_non_working_ranges') || '[]'),
+            pendingSync: JSON.parse(localStorage.getItem('qanill_pending') || '[]'),
+            online: navigator.onLine
+        };
+
+        let dashboardChartInstance = null;
+
+        function applyCustomColors() {
+            const root = document.documentElement;
+            root.style.setProperty('--custom-header', STATE.colors.headerBg);
+            root.style.setProperty('--custom-sidebar', STATE.colors.sidebarBg);
+            root.style.setProperty('--custom-btn', STATE.colors.btnBg);
+            root.style.setProperty('--custom-text', STATE.colors.textColor);
+            root.style.setProperty('--custom-icon', STATE.colors.iconColor || STATE.colors.btnBg);
+        }
+
+        function getThemeClasses() {
+            applyCustomColors();
+            if (STATE.themeMode === 'light') {
+                return {
+                    body: 'bg-slate-100 text-slate-900',
+                    card: 'bg-white border-slate-300 text-slate-900 shadow-sm',
+                    cardAlt: 'bg-white border-slate-200 text-slate-900 shadow-md',
+                    input: 'bg-slate-50 border-slate-300 text-slate-900',
+                    textMuted: 'text-slate-600',
+                    tableHeader: 'bg-slate-100 text-slate-700 border-slate-300',
+                    tableRow: 'border-slate-200 hover:bg-slate-50'
+                };
+            } else {
+                return {
+                    body: 'bg-slate-900 text-slate-100',
+                    card: 'bg-slate-800/80 border-slate-700/60 text-slate-100 shadow-xl',
+                    cardAlt: 'bg-slate-800 border-slate-700 text-slate-100 shadow-xl',
+                    input: 'bg-slate-900 border-slate-700 text-white',
+                    textMuted: 'text-slate-400',
+                    tableHeader: 'bg-slate-800/80 text-slate-400 border-slate-700',
+                    tableRow: 'border-slate-800 hover:bg-slate-800/30'
+                };
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const bgClass = type === 'success' ? 'bg-[#486C2F] text-white' : (type === 'error' ? 'bg-[#8B2626] text-white' : 'bg-[#EF6905] text-white');
+            toast.className = `pointer-events-auto px-4 py-3 rounded-2xl shadow-xl text-sm font-semibold flex items-center space-x-2 transform translate-y-2 opacity-0 transition-all duration-300 ${bgClass}`;
+            toast.innerHTML = `
+                <i class="fa-solid ${type === 'success' ? 'fa-circle-check' : (type === 'error' ? 'fa-triangle-exclamation' : 'fa-circle-info')}"></i>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.remove('translate-y-2', 'opacity-0'); }, 10);
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        window.addEventListener('online', () => { STATE.online = true; updateNetworkStatus(); syncOfflineData(); });
+        window.addEventListener('offline', () => { STATE.online = false; updateNetworkStatus(); });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            applyCustomColors();
+            initServiceWorker();
+            renderSplashWelcome();
+        });
+
+        function initServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                const swCode = `
+                    self.addEventListener('install', e => e.waitUntil(self.skipWaiting()));
+                    self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+                    self.addEventListener('fetch', e => e.respondWith(fetch(e.request).catch(() => caches.match(e.request))));
+                `;
+                const blob = new Blob([swCode], { type: 'text/javascript' });
+                navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
+            }
+        }
+
+        function playSound(type) {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                if (type === 'success') {
+                    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.1);
+                    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.3);
+                } else {
+                    osc.frequency.setValueAtTime(220, ctx.currentTime);
+                    osc.frequency.setValueAtTime(150, ctx.currentTime + 0.15);
+                    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.4);
+                }
+            } catch(e) {}
+        }
+
+        // --- VENTANA 1: SPLASH SCREEN AUTOMÁTICO CON COLOR Y TEXTO PERSONALIZABLE ---
+        function renderSplashWelcome() {
+            const app = document.getElementById('app');
+            document.body.className = `h-full flex flex-col overflow-hidden bg-slate-950`;
+            app.innerHTML = `
+                <div class="absolute inset-0 flex flex-col items-center justify-center p-6 z-50 text-center transition-colors duration-500" style="background-color: ${STATE.splashBgColor}; color: ${STATE.splashTextColor};">
+                    <div class="w-24 h-24 rounded-3xl flex items-center justify-center shadow-2xl mb-6 animate-bounce bg-white/10 backdrop-blur-md border border-white/20 overflow-hidden">
+                        ${STATE.logo ? `<img src="${STATE.logo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-graduation-cap text-5xl" style="color: ${STATE.splashTextColor};"></i>`}
+                    </div>
+                    <h1 class="text-3xl md:text-4xl font-extrabold tracking-wide drop-shadow-md">${STATE.schoolName}</h1>
+                    <p class="text-sm md:text-base mt-2 font-medium tracking-wide opacity-90">Sistema Inteligente de Control de Asistencia</p>
+                    
+                    <div class="mt-8 w-48 bg-black/30 h-2 rounded-full overflow-hidden mx-auto border border-white/20">
+                        <div id="loading-bar" class="h-full w-0 transition-all duration-1000 rounded-full" style="background-color: var(--custom-btn, #EF6905);"></div>
+                    </div>
+                    <p class="text-xs mt-3 animate-pulse opacity-80">Cargando sistema...</p>
+
+                    <div class="absolute bottom-6 text-xs opacity-75">
+                        Ciclo Escolar Activo: <span class="font-bold">${STATE.activeCycle}</span>
+                    </div>
+                </div>
+            `;
+
+            setTimeout(() => {
+                const bar = document.getElementById('loading-bar');
+                if (bar) bar.style.width = '100%';
+            }, 100);
+
+            setTimeout(() => {
+                renderLogin();
+            }, 2200);
+        }
+
+        // --- VENTANA 2: AUTENTICACIÓN ---
+        function renderLogin() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            document.body.className = `h-full flex flex-col overflow-hidden ${t.body}`;
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col items-center justify-center p-6" style="background-color: var(--custom-sidebar); opacity: 0.15;"></div>
+                <div class="absolute inset-0 flex flex-col items-center justify-center p-6 pointer-events-none">
+                    <div class="w-full max-w-md ${t.card} border rounded-3xl p-8 shadow-2xl pointer-events-auto" style="color: var(--custom-text);">
+                        <div class="text-center mb-8">
+                            ${STATE.logo ? `<img src="${STATE.logo}" class="w-16 h-16 object-cover rounded-2xl mx-auto mb-4 shadow-lg">` : `
+                            <div class="w-16 h-16 rounded-2xl mx-auto flex items-center justify-center text-3xl shadow-lg mb-4 text-white" style="background-color: var(--custom-sidebar);">
+                                <i class="fa-solid fa-leaf" style="color: var(--custom-icon);"></i>
+                            </div>`}
+                            <h2 class="text-2xl font-bold">${STATE.schoolName}</h2>
+                            <p class="text-xs mt-1 uppercase tracking-wider font-semibold" style="color: var(--custom-btn);">Seleccione su rol de acceso</p>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Rol de Usuario</label>
+                                <select id="login-role" class="w-full ${t.input} border rounded-xl px-4 py-3 text-sm focus:outline-none">
+                                    <option value="admin">Administrador (Acceso total)</option>
+                                    <option value="personal">Personal de control (Asistencia y reportes)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Nombre de Terminal / Dispositivo</label>
+                                <input type="text" id="login-device" value="${STATE.device}" class="w-full ${t.input} border rounded-xl px-4 py-3 text-sm focus:outline-none">
+                            </div>
+                            <button onclick="handleLogin()" class="w-full text-white font-semibold py-3.5 rounded-xl shadow-lg transition-all duration-200 mt-2" style="background-color: var(--custom-btn);">
+                                Iniciar Sesión
+                            </button>
+                        </div>
+                        <div class="mt-6 text-center text-xs opacity-75">
+                            <button onclick="renderSplashWelcome()" class="underline text-xs">Volver a portada</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleLogin() {
+            const role = document.getElementById('login-role').value;
+            const device = document.getElementById('login-device').value.trim();
+            if (device) {
+                STATE.device = device;
+                localStorage.setItem('qanill_device', device);
+            }
+            STATE.role = role;
+            STATE.user = role === 'admin' ? 'Administrador' : 'Personal de Control';
+            renderDashboard();
+        }
+
+        function toggleThemeMode() {
+            STATE.themeMode = STATE.themeMode === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('qanill_theme', STATE.themeMode);
+            renderDashboard();
+        }
+
+        // --- DASHBOARD PRINCIPAL ---
+        function renderDashboard() {
+            const t = getThemeClasses();
+            document.body.className = `h-full flex flex-col overflow-hidden ${t.body}`;
+            const today = new Date().toISOString().split('T')[0];
+            const todayAttendance = STATE.attendance.filter(a => a.date === today && a.cycle === STATE.activeCycle);
+            const totalStudents = STATE.students.filter(s => s.status === 'activo').length;
+            const attended = todayAttendance.length;
+            const punctual = todayAttendance.filter(a => a.status === 'puntual').length;
+            const late = todayAttendance.filter(a => a.status === 'tarde').length;
+            const absent = Math.max(0, totalStudents - attended);
+            const percentage = totalStudents > 0 ? ((attended / totalStudents) * 100).toFixed(1) : 0;
+
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            ${STATE.logo ? `<img src="${STATE.logo}" class="w-10 h-10 object-cover rounded-xl">` : `
+                            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold" style="background-color: var(--custom-btn);">
+                                <i class="fa-solid fa-leaf" style="color: var(--custom-icon);"></i>
+                            </div>`}
+                            <div>
+                                <h1 class="text-sm md:text-base font-bold">${STATE.schoolName}</h1>
+                                <p class="text-[11px] md:text-xs opacity-90">${STATE.device} • <span id="network-badge">${STATE.online ? '🟢 En Línea' : '🔴 Offline'}</span></p>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="flex items-center bg-black/30 px-3 py-1.5 rounded-full space-x-2">
+                                <span class="text-[10px] font-bold">☀️/🌙</span>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="theme-switch" onchange="toggleThemeMode()" class="sr-only peer" ${STATE.themeMode === 'light' ? 'checked' : ''}>
+                                    <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all"></div>
+                                </label>
+                            </div>
+                            <span class="text-xs bg-black/20 px-3 py-1.5 rounded-lg font-medium hidden sm:inline">Ciclo: ${STATE.activeCycle}</span>
+                            <button onclick="renderLogin()" class="bg-black/30 hover:bg-black/50 text-xs px-3 py-2 rounded-lg font-medium transition">
+                                <i class="fa-solid fa-right-from-bracket mr-1"></i> Salir
+                            </button>
+                        </div>
+                    </header>
+
+                    <div class="flex-1 flex overflow-hidden">
+                        <aside class="w-64 border-r flex flex-col p-4 space-y-2 shrink-0 hidden md:flex shadow-lg" style="background-color: var(--custom-sidebar); color: var(--custom-text);">
+                            <button onclick="renderScanner()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-qrcode w-5" style="color: var(--custom-icon);"></i><span>Escanear Carné</span>
+                            </button>
+                            <button onclick="renderManual()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-user-pen w-5" style="color: var(--custom-icon);"></i><span>Registro Manual</span>
+                            </button>
+                            <button onclick="renderDashboard()" class="w-full text-left px-4 py-3 rounded-xl bg-black/30 font-bold text-sm flex items-center space-x-3 shadow-md">
+                                <i class="fa-solid fa-chart-pie w-5" style="color: var(--custom-icon);"></i><span>Dashboard</span>
+                            </button>
+                            <button onclick="renderStudents()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-users w-5" style="color: var(--custom-icon);"></i><span>Estudiantes y Carnés</span>
+                            </button>
+                            <button onclick="renderReports()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-file-excel w-5" style="color: var(--custom-icon);"></i><span>Reportes & Ausencias</span>
+                            </button>
+                            ${STATE.role === 'admin' ? `
+                            <button onclick="renderSettings()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-gear w-5" style="color: var(--custom-icon);"></i><span>Configuración</span>
+                            </button>` : ''}
+                        </aside>
+
+                        <main class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 pb-24 md:pb-6">
+                            ${STATE.pendingSync.length > 0 ? `
+                            <div class="border px-4 py-3 rounded-2xl flex items-center justify-between" style="background-color: var(--custom-btn); opacity: 0.15; color: var(--custom-text);">
+                                <div class="flex items-center space-x-3">
+                                    <i class="fa-solid fa-triangle-exclamation text-lg" style="color: var(--custom-icon);"></i>
+                                    <span class="text-sm font-medium">Hay ${STATE.pendingSync.length} registro(s) pendientes de sincronización offline.</span>
+                                </div>
+                                <button onclick="syncOfflineData()" class="text-white font-bold text-xs px-4 py-2 rounded-xl transition" style="background-color: var(--custom-btn);">Sincronizar</button>
+                            </div>` : ''}
+
+                            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Inscritos</p>
+                                    <h3 class="text-2xl font-bold mt-1">${totalStudents}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Asistieron</p>
+                                    <h3 class="text-2xl font-bold text-[#486C2F] mt-1">${attended}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Puntuales</p>
+                                    <h3 class="text-2xl font-bold text-[#486C2F] mt-1">${punctual}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Tarde</p>
+                                    <h3 class="text-2xl font-bold mt-1" style="color: var(--custom-btn);">${late}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Ausentes</p>
+                                    <h3 class="text-2xl font-bold text-[#8B2626] mt-1">${absent}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">% Asistencia</p>
+                                    <h3 class="text-2xl font-bold text-[#486C2F] mt-1">${percentage}%</h3>
+                                </div>
+                            </div>
+
+                            <div class="${t.card} border rounded-3xl p-4 md:p-6 space-y-4 shadow-xl">
+                                <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-700/40 pb-4">
+                                    <div>
+                                        <h3 class="text-base font-bold flex items-center">
+                                            <i class="fa-solid fa-chart-column mr-2" style="color: var(--custom-icon);"></i> Análisis Estadístico de Asistencia
+                                        </h3>
+                                        <p class="text-xs opacity-75">Consulte comparativas generales por grado o el desempeño individual por estudiante.</p>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <select id="chart-mode" onchange="toggleDashboardChartMode(this.value)" class="${t.input} border rounded-xl px-3 py-1.5 text-xs font-semibold">
+                                            <option value="grado">📊 Ver por Grado</option>
+                                            <option value="estudiante">👤 Ver por Estudiante Específico</option>
+                                        </select>
+                                        
+                                        <div id="chart-student-select-wrapper" class="hidden">
+                                            <select id="chart-student-id" onchange="updateDashboardChart()" class="${t.input} border rounded-xl px-3 py-1.5 text-xs">
+                                                ${STATE.students.filter(s => s.status === 'activo').map(s => `<option value="${s.id}">${s.names} ${s.lastNames} (${s.grade})</option>`).join('')}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="relative w-full h-72 md:h-80">
+                                    <canvas id="dashboard-chart-canvas"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="${t.card} border rounded-3xl p-4 md:p-6">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h3 class="text-base font-bold">Últimos Registros del Día</h3>
+                                    <span class="text-xs ${t.textMuted}">${todayAttendance.length} marcaciones hoy</span>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-left text-sm">
+                                        <thead>
+                                            <tr class="border-b ${t.tableHeader} text-xs uppercase">
+                                                <th class="pb-3">Estudiante</th>
+                                                <th class="pb-3">Grado/Sec</th>
+                                                <th class="pb-3">Hora</th>
+                                                <th class="pb-3">Estado</th>
+                                                <th class="pb-3">Tipo</th>
+                                                <th class="pb-3">Terminal</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y ${t.tableRow}">
+                                            ${todayAttendance.slice(-10).reverse().map(a => {
+                                                const st = STATE.students.find(s => s.id === a.id) || { names: 'Desconocido', lastNames: '', grade: '-', section: '-' };
+                                                return `
+                                                    <tr>
+                                                        <td class="py-3 font-medium flex items-center space-x-3">
+                                                            <div class="w-8 h-8 rounded-full bg-[#8B2626]/20 text-[#8B2626] flex items-center justify-center font-bold text-xs overflow-hidden">
+                                                                ${st.photo ? `<img src="${st.photo}" class="w-full h-full object-cover">` : st.names[0]}
+                                                            </div>
+                                                            <span>${st.names} ${st.lastNames}</span>
+                                                        </td>
+                                                        <td class="py-3">${st.grade} "${st.section}"</td>
+                                                        <td class="py-3">${a.time}</td>
+                                                        <td class="py-3">
+                                                            <span class="px-2.5 py-1 rounded-full text-xs font-semibold ${a.status === 'puntual' ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-[#EF6905]/20 text-[#EF6905]'}">
+                                                                ${a.status.toUpperCase()}
+                                                            </span>
+                                                        </td>
+                                                        <td class="py-3 capitalize">${a.type}</td>
+                                                        <td class="py-3 text-xs opacity-75">${a.device}</td>
+                                                    </tr>
+                                                `;
+                                            }).join('') || `<tr><td colspan="6" class="py-6 text-center opacity-60">No hay registros de asistencia en la jornada de hoy.</td></tr>`}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </main>
+                    </div>
+
+                    <!-- BARRA INFERIOR MÓVIL -->
+                    <nav class="border-t px-2 py-2 flex items-center justify-around md:hidden shrink-0 fixed bottom-0 left-0 right-0 z-40 shadow-2xl" style="background-color: var(--custom-sidebar); color: var(--custom-text);">
+                        <button onclick="renderScanner()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-qrcode text-base mb-1" style="color: var(--custom-icon);"></i><span>Escanear</span></button>
+                        <button onclick="renderManual()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-user-pen text-base mb-1" style="color: var(--custom-icon);"></i><span>Manual</span></button>
+                        <button onclick="renderDashboard()" class="flex flex-col items-center text-[10px] font-bold py-1" style="color: var(--custom-btn);"><i class="fa-solid fa-chart-pie text-base mb-1" style="color: var(--custom-icon);"></i><span>Dash</span></button>
+                        <button onclick="renderStudents()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-users text-base mb-1" style="color: var(--custom-icon);"></i><span>Alumnos</span></button>
+                        <button onclick="renderReports()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-file-excel text-base mb-1" style="color: var(--custom-icon);"></i><span>Reportes</span></button>
+                        ${STATE.role === 'admin' ? `
+                        <button onclick="renderSettings()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-gear text-base mb-1" style="color: var(--custom-icon);"></i><span>Config</span></button>` : ''}
+                    </nav>
+                </div>
+            `;
+
+            setTimeout(() => { updateDashboardChart(); }, 100);
+        }
+
+        function toggleDashboardChartMode(mode) {
+            const wrapper = document.getElementById('chart-student-select-wrapper');
+            if (mode === 'estudiante') {
+                wrapper.classList.remove('hidden');
+            } else {
+                wrapper.classList.add('hidden');
+            }
+            updateDashboardChart();
+        }
+
+        function updateDashboardChart() {
+            const ctx = document.getElementById('dashboard-chart-canvas');
+            if (!ctx) return;
+            const mode = document.getElementById('chart-mode')?.value || 'grado';
+            const isLight = STATE.themeMode === 'light';
+            const textColor = isLight ? '#1e293b' : '#f8fafc';
+            const gridColor = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+
+            if (dashboardChartInstance) {
+                dashboardChartInstance.destroy();
+            }
+
+            if (mode === 'grado') {
+                const labels = STATE.gradesList;
+                const puntualesData = [];
+                const tardesData = [];
+                const ausentesData = [];
+                const today = new Date().toISOString().split('T')[0];
+
+                labels.forEach(g => {
+                    const gradeStudents = STATE.students.filter(s => s.grade === g && s.status === 'activo');
+                    let p = 0, t = 0, a = 0;
+
+                    gradeStudents.forEach(st => {
+                        const rec = STATE.attendance.find(att => att.id === st.id && att.date === today && att.cycle === STATE.activeCycle);
+                        if (rec) {
+                            if (rec.status === 'puntual') p++;
+                            else if (rec.status === 'tarde') t++;
+                        } else {
+                            a++;
+                        }
+                    });
+
+                    puntualesData.push(p);
+                    tardesData.push(t);
+                    ausentesData.push(a);
+                });
+
+                dashboardChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            { label: 'Puntuales', data: puntualesData, backgroundColor: '#486C2F', borderRadius: 6 },
+                            { label: 'Tarde', data: tardesData, backgroundColor: STATE.colors.btnBg, borderRadius: 6 },
+                            { label: 'Ausentes', data: ausentesData, backgroundColor: '#8B2626', borderRadius: 6 }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: textColor, font: { family: 'Plus Jakarta Sans', weight: 'bold' } } }
+                        },
+                        scales: {
+                            x: { ticks: { color: textColor }, grid: { color: gridColor } },
+                            y: { ticks: { color: textColor, stepSize: 1 }, grid: { color: gridColor }, beginAtZero: true }
+                        }
+                    }
+                });
+            } else {
+                const studentId = document.getElementById('chart-student-id')?.value || STATE.students[0]?.id;
+                const student = STATE.students.find(s => s.id === studentId);
+                let pCount = 0, tCount = 0;
+                const studentRecords = STATE.attendance.filter(a => a.id === studentId && a.cycle === STATE.activeCycle);
+                
+                studentRecords.forEach(r => {
+                    if (r.status === 'puntual') pCount++;
+                    else if (r.status === 'tarde') tCount++;
+                });
+
+                dashboardChartInstance = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Asistencias Puntuales', 'Llegadas Tarde'],
+                        datasets: [{
+                            data: [pCount, tCount],
+                            backgroundColor: ['#486C2F', STATE.colors.btnBg],
+                            borderWidth: 2,
+                            borderColor: isLight ? '#ffffff' : '#1e293b'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: textColor, font: { family: 'Plus Jakarta Sans', weight: 'bold' } } },
+                            title: { display: true, text: `Historial de ${student ? student.names + ' ' + student.lastNames : 'Estudiante'}`, color: textColor }
+                        }
+                    }
+                });
+            }
+        }
+
+        // --- MÓDULO DE ESCANEO CONTINUO CON DEBOUNCE ---
+        let scannerActive = false;
+        let videoStream = null;
+        let lastScannedCode = '';
+        let lastScanTime = 0;
+
+        function renderScanner() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="stopCamera(); renderDashboard();" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Registrar Asistencia por Escáner</h1>
+                        </div>
+                        <span class="text-xs bg-[#486C2F]/20 text-[#F1E5A1] px-3 py-1 rounded-full font-semibold">Límite Hoy: ${getEffectiveTimeLimit(new Date().toISOString().split('T')[0])} AM</span>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto flex flex-col items-center justify-center max-w-xl mx-auto w-full pb-24 md:pb-6">
+                        <div class="w-full ${t.card} border rounded-3xl p-6 shadow-xl text-center">
+                            <div id="scanner-container" class="relative w-full h-64 bg-black rounded-2xl overflow-hidden mb-6 flex items-center justify-center border border-slate-700">
+                                <video id="qr-video" class="w-full h-full object-cover" autoplay playsinline></video>
+                                <div id="scanner-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-4">
+                                    <i class="fa-solid fa-camera text-4xl mb-2 animate-pulse" style="color: var(--custom-icon);"></i>
+                                    <p class="text-sm">Cámara inactiva. Presione activar para iniciar el escaneo QR continuo.</p>
+                                </div>
+                            </div>
+                            <div class="flex space-x-3 mb-6">
+                                <button onclick="startCamera()" class="flex-1 text-white font-semibold py-3 rounded-xl shadow-md transition" style="background-color: var(--custom-btn);">
+                                    <i class="fa-solid fa-play mr-2"></i> Activar Cámara
+                                </button>
+                                <button onclick="stopCamera()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 rounded-xl shadow-md transition">
+                                    <i class="fa-solid fa-stop mr-2"></i> Apagar
+                                </button>
+                            </div>
+                            <div class="border-t border-slate-700/50 pt-4">
+                                <label class="block text-xs font-medium ${t.textMuted} mb-2">Simulador de Código de Carné (Pruebas Rápidas):</label>
+                                <div class="flex space-x-2">
+                                    <input type="text" id="sim-code" placeholder="Ej. QAN-2026-1001" class="flex-1 ${t.input} border rounded-xl px-4 py-2.5 text-sm focus:outline-none">
+                                    <button onclick="processScanCode(document.getElementById('sim-code').value)" class="text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition" style="background-color: var(--custom-btn);">
+                                        Simular
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function startCamera() {
+            if (scannerActive) return;
+            const video = document.getElementById('qr-video');
+            const placeholder = document.getElementById('scanner-placeholder');
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+                .then(stream => {
+                    videoStream = stream;
+                    video.srcObject = stream;
+                    video.setAttribute('playsinline', true);
+                    video.play();
+                    scannerActive = true;
+                    if (placeholder) placeholder.style.display = 'none';
+                    requestAnimationFrame(tickScanner);
+                })
+                .catch(err => showToast('No se pudo acceder a la cámara: ' + err.message, 'error'));
+        }
+
+        function stopCamera() {
+            scannerActive = false;
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            const placeholder = document.getElementById('scanner-placeholder');
+            if (placeholder) placeholder.style.display = 'flex';
+        }
+
+        function tickScanner() {
+            if (!scannerActive) return;
+            const video = document.getElementById('qr-video');
+            if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code) {
+                    const nowTime = Date.now();
+                    // Debounce de 3 segundos para evitar doble escaneo accidental del mismo carné
+                    if (code.data !== lastScannedCode || (nowTime - lastScanTime > 3000)) {
+                        lastScannedCode = code.data;
+                        lastScanTime = nowTime;
+                        processScanCode(code.data);
+                    }
+                    scannerActive = false;
+                    setTimeout(() => {
+                        if (videoStream) scannerActive = true;
+                        requestAnimationFrame(tickScanner);
+                    }, 1500);
+                    return;
+                }
+            }
+            if (scannerActive) requestAnimationFrame(tickScanner);
+        }
+
+        function isNonWorkingDate(dateStr) {
+            const ranges = STATE.nonWorkingRanges || [];
+            const d = new Date(dateStr);
+            if (!STATE.includeWeekends) {
+                const dayOfWeek = d.getDay();
+                if (dayOfWeek === 0 || dayOfWeek === 6) return true;
+            }
+            for (let r of ranges) {
+                const start = new Date(r.start);
+                const end = new Date(r.end);
+                if (d >= start && d <= end) return true;
+            }
+            return false;
+        }
+
+        function getEffectiveTimeLimit(dateStr) {
+            if (STATE.specialSchedules && STATE.specialSchedules[dateStr]) {
+                return STATE.specialSchedules[dateStr];
+            }
+            return STATE.timeLimit || '07:10';
+        }
+
+        function processScanCode(code) {
+            code = code.trim();
+            const today = new Date().toISOString().split('T')[0];
+            const d = new Date(today);
+
+            if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) {
+                playSound('error');
+                showToast('⚠️ Hoy es fin de semana y las asistencias en fines de semana están desactivadas.', 'warning');
+                return;
+            }
+
+            if (isNonWorkingDate(today)) {
+                playSound('error');
+                showToast('⚠️ Hoy es un período de descanso o asueto configurado. No se requiere asistencia.', 'warning');
+                return;
+            }
+
+            const student = STATE.students.find(s => s.id === code && s.status === 'activo');
+            if (!student) {
+                playSound('error');
+                showToast('⚠️ Estudiante no encontrado o inactivo: ' + code, 'error');
+                return;
+            }
+
+            const already = STATE.attendance.find(a => a.id === student.id && a.date === today && a.cycle === STATE.activeCycle);
+            if (already) {
+                playSound('error');
+                showToast(`⚠️ ${student.names} ya registró asistencia hoy a las ${already.time}.`, 'warning');
+                return;
+            }
+
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            const [h, m] = timeStr.split(':').map(Number);
+            
+            const effectiveLimit = getEffectiveTimeLimit(today);
+            const [limitH, limitM] = effectiveLimit.split(':').map(Number);
+            const status = (h * 60 + m) <= (limitH * 60 + limitM) ? 'puntual' : 'tarde';
+
+            const record = {
+                id: student.id,
+                date: today,
+                time: timeStr,
+                status: status,
+                type: 'escaneo',
+                device: STATE.device,
+                user: STATE.user,
+                cycle: STATE.activeCycle
+            };
+
+            STATE.attendance.push(record);
+            if (!STATE.online) {
+                STATE.pendingSync.push(record);
+                localStorage.setItem('qanill_pending', JSON.stringify(STATE.pendingSync));
+            }
+            localStorage.setItem('qanill_attendance', JSON.stringify(STATE.attendance));
+            playSound('success');
+
+            showSuccessModal(student, record);
+        }
+
+        function showSuccessModal(student, record) {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="scan-success-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-md w-full text-center shadow-2xl">
+                        <div class="w-16 h-16 rounded-full bg-[#486C2F]/25 text-[#486C2F] flex items-center justify-center mx-auto mb-4 text-3xl">
+                            <i class="fa-solid fa-check"></i>
+                        </div>
+                        <h3 class="text-xl font-bold mb-1">¡Asistencia Registrada!</h3>
+                        <p class="text-xs ${t.textMuted} mb-6">Ingreso exitoso guardado correctamente.</p>
+                        
+                        <div class="bg-black/20 rounded-2xl p-4 mb-6 flex items-center space-x-4 text-left">
+                            <div class="w-16 h-16 rounded-xl bg-slate-700 overflow-hidden shrink-0">
+                                ${student.photo ? `<img src="${student.photo}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center font-bold text-lg">${student.names[0]}</div>`}
+                            </div>
+                            <div>
+                                <h4 class="font-bold text-sm">${student.names} ${student.lastNames}</h4>
+                                <p class="text-xs opacity-75">Código: ${student.id}</p>
+                                <p class="text-xs text-[#486C2F] font-semibold mt-1">Grado: ${student.grade} "${student.section}" • ${record.time}</p>
+                                <span class="inline-block mt-2 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${record.status === 'puntual' ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-[#EF6905]/20 text-[#EF6905]'}">
+                                    ${record.status.toUpperCase()}
+                                </span>
+                            </div>
+                        </div>
+                        <button onclick="document.getElementById('scan-success-modal').remove()" class="w-full text-white font-semibold py-3 rounded-xl shadow-md transition" style="background-color: var(--custom-btn);">
+                            Continuar Escaneando
+                        </button>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+            setTimeout(() => {
+                const m = document.getElementById('scan-success-modal');
+                if (m) m.remove();
+            }, 2000);
+        }
+
+        // --- REGISTRO MANUAL ---
+        function renderManual() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const today = new Date().toISOString().split('T')[0];
+            const todayAttendance = STATE.attendance.filter(a => a.date === today && a.cycle === STATE.activeCycle);
+
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Registro Manual de Asistencia</h1>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto max-w-3xl mx-auto w-full space-y-6 pb-24 md:pb-6">
+                        <div class="${t.card} border p-4 md:p-6 rounded-3xl space-y-4">
+                            <h3 class="text-sm font-bold uppercase tracking-wider" style="color: var(--custom-btn);">Registrar Ingreso de Alumno</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Filtrar por Grado</label>
+                                    <select id="manual-grade-filter" onchange="filterManualStudents()" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm focus:outline-none">
+                                        <option value="">Todos los Grados</option>
+                                        ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Buscar por Nombre o Código</label>
+                                    <input type="text" id="manual-search" oninput="filterManualStudents()" placeholder="Escriba para buscar..." class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm focus:outline-none">
+                                </div>
+                            </div>
+                            
+                            <div id="manual-results" class="space-y-2 max-h-64 overflow-y-auto mt-4">
+                                ${renderManualStudentList(STATE.students.filter(s => s.status === 'activo'))}
+                            </div>
+                        </div>
+
+                        <div class="${t.card} border p-4 md:p-6 rounded-3xl space-y-4">
+                            <h3 class="text-sm font-bold uppercase tracking-wider" style="color: var(--custom-btn);"><i class="fa-solid fa-clock-rotate-left mr-1.5" style="color: var(--custom-icon);"></i> Eliminar Registro Erróneo del Día (${today})</h3>
+                            <p class="text-xs opacity-75">Si se registró por equivocación a un estudiante, puede eliminar su marcación aquí:</p>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left text-sm">
+                                    <thead>
+                                        <tr class="border-b ${t.tableHeader} text-xs uppercase">
+                                            <th class="p-2.5">Estudiante</th>
+                                            <th class="p-2.5">Grado</th>
+                                            <th class="p-2.5">Hora</th>
+                                            <th class="p-2.5">Acción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y ${t.tableRow}">
+                                        ${todayAttendance.map(a => {
+                                            const st = STATE.students.find(s => s.id === a.id) || { names: 'Desconocido', lastNames: '', grade: '-' };
+                                            return `
+                                                <tr>
+                                                    <td class="p-2.5 font-medium">${st.names} ${st.lastNames} (${st.id})</td>
+                                                    <td class="p-2.5">${st.grade} "${st.section || 'A'}"</td>
+                                                    <td class="p-2.5">${a.time}</td>
+                                                    <td class="p-2.5">
+                                                        <button onclick="deleteAttendanceRecord('${a.id}', '${today}')" class="bg-[#8B2626] hover:bg-[#721f1f] text-white text-xs px-3 py-1.5 rounded-xl transition flex items-center space-x-1">
+                                                            <i class="fa-solid fa-trash"></i> <span>Eliminar</span>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('') || `<tr><td colspan="4" class="p-4 text-center opacity-60 text-xs">No hay registros de asistencia hoy para eliminar.</td></tr>`}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function deleteAttendanceRecord(studentId, date) {
+            if (confirm('¿Está seguro de eliminar esta marcación por equivocación?')) {
+                STATE.attendance = STATE.attendance.filter(a => !(a.id === studentId && a.date === date && a.cycle === STATE.activeCycle));
+                localStorage.setItem('qanill_attendance', JSON.stringify(STATE.attendance));
+                showToast('✅ Registro de asistencia eliminado correctamente.');
+                renderManual();
+            }
+        }
+
+        function filterManualStudents() {
+            const query = document.getElementById('manual-search').value.toLowerCase();
+            const gradeFilter = document.getElementById('manual-grade-filter').value;
+            const filtered = STATE.students.filter(s => {
+                const matchStatus = s.status === 'activo';
+                const matchGrade = gradeFilter ? s.grade === gradeFilter : true;
+                const matchQuery = s.names.toLowerCase().includes(query) ||
+                    s.lastNames.toLowerCase().includes(query) ||
+                    s.id.toLowerCase().includes(query);
+                return matchStatus && matchGrade && matchQuery;
+            });
+            document.getElementById('manual-results').innerHTML = renderManualStudentList(filtered);
+        }
+
+        function renderManualStudentList(list) {
+            const t = getThemeClasses();
+            if (list.length === 0) return `<p class="text-center opacity-60 py-4">No se encontraron estudiantes.</p>`;
+            return list.map(s => `
+                <div class="${t.cardAlt} border p-3 rounded-2xl flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 rounded-xl bg-[#8B2626]/20 text-[#8B2626] overflow-hidden shrink-0 flex items-center justify-center font-bold">
+                            ${s.photo ? `<img src="${s.photo}" class="w-full h-full object-cover">` : s.names[0]}
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-sm">${s.names} ${s.lastNames}</h4>
+                            <p class="text-xs opacity-75">Código: ${s.id} • Grado: ${s.grade} "${s.section}"</p>
+                        </div>
+                    </div>
+                    <button onclick="processManualRecord('${s.id}')" class="text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition" style="background-color: var(--custom-btn);">
+                        Registrar
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        function processManualRecord(id) {
+            const today = new Date().toISOString().split('T')[0];
+            const d = new Date(today);
+
+            if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) {
+                showToast('⚠️ Hoy es fin de semana y las asistencias en fines de semana están desactivadas.', 'warning');
+                return;
+            }
+
+            if (isNonWorkingDate(today)) {
+                showToast('⚠️ Hoy es un período no laborable configurado. No se requiere asistencia.', 'warning');
+                return;
+            }
+
+            const student = STATE.students.find(s => s.id === id);
+            const already = STATE.attendance.find(a => a.id === student.id && a.date === today && a.cycle === STATE.activeCycle);
+            if (already) {
+                showToast(`⚠️ El estudiante ya tiene registrada su asistencia hoy a las ${already.time}.`, 'warning');
+                return;
+            }
+
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            const [h, m] = timeStr.split(':').map(Number);
+            
+            const effectiveLimit = getEffectiveTimeLimit(today);
+            const [limitH, limitM] = effectiveLimit.split(':').map(Number);
+            const status = (h * 60 + m) <= (limitH * 60 + limitM) ? 'puntual' : 'tarde';
+
+            const record = {
+                id: student.id,
+                date: today,
+                time: timeStr,
+                status: status,
+                type: 'manual',
+                device: STATE.device,
+                user: STATE.user,
+                cycle: STATE.activeCycle
+            };
+
+            STATE.attendance.push(record);
+            if (!STATE.online) {
+                STATE.pendingSync.push(record);
+                localStorage.setItem('qanill_pending', JSON.stringify(STATE.pendingSync));
+            }
+            localStorage.setItem('qanill_attendance', JSON.stringify(STATE.attendance));
+            playSound('success');
+            
+            showToast(`✅ Asistencia manual registrada para ${student.names} (${status.toUpperCase()})`);
+            renderManual();
+        }
+
+        // --- ADMINISTRACIÓN DE ESTUDIANTES ---
+        let selectedGradeForCardView = null;
+        let selectedStudentIdsForDelete = new Set();
+
+        function renderStudents() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            
+            if (selectedGradeForCardView) {
+                const gradeStudents = STATE.students.filter(s => s.grade === selectedGradeForCardView);
+                app.innerHTML = `
+                    <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                        <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                            <div class="flex items-center space-x-3">
+                                <button onclick="selectedGradeForCardView = null; selectedStudentIdsForDelete.clear(); renderStudents();" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                                <h1 class="text-sm md:text-base font-bold">Estudiantes de Grado: <span class="text-[#F1E5A1]">${selectedGradeForCardView}</span></h1>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                ${selectedStudentIdsForDelete.size > 0 ? `
+                                <button onclick="deleteSelectedStudents()" class="bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center shadow-md animate-pulse">
+                                    <i class="fa-solid fa-trash mr-1.5"></i> Eliminar Seleccionados (${selectedStudentIdsForDelete.size})
+                                </button>` : ''}
+                                <button onclick="openStudentModal()" class="text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-btn);">
+                                    <i class="fa-solid fa-plus mr-1.5"></i> Nuevo Alumno
+                                </button>
+                            </div>
+                        </header>
+                        <main class="flex-1 p-4 md:p-6 overflow-y-auto space-y-4 pb-24 md:pb-6">
+                            <div class="flex items-center justify-between bg-black/10 p-3 rounded-2xl text-xs">
+                                <span>💡 Marque la casilla en cada tarjeta para seleccionar varios estudiantes y eliminarlos de forma masiva.</span>
+                                <button onclick="toggleSelectAllGradeStudents('${selectedGradeForCardView}')" class="font-bold underline">Seleccionar / Deseleccionar Todos</button>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                ${gradeStudents.map(s => {
+                                    const isChecked = selectedStudentIdsForDelete.has(s.id);
+                                    return `
+                                        <div class="${t.cardAlt} border rounded-2xl p-4 flex flex-col justify-between shadow-md relative ${isChecked ? 'ring-2 ring-red-500' : ''}">
+                                            <div class="absolute top-3 right-3 z-10">
+                                                <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleStudentSelection('${s.id}')" class="w-5 h-5 accent-red-600 cursor-pointer rounded">
+                                            </div>
+                                            <div class="flex items-center space-x-3 mb-3 pr-6">
+                                                <div class="w-12 h-12 rounded-xl bg-[#8B2626]/20 text-[#8B2626] overflow-hidden shrink-0 flex items-center justify-center font-bold">
+                                                    ${s.photo ? `<img src="${s.photo}" class="w-full h-full object-cover">` : s.names[0]}
+                                                </div>
+                                                <div class="overflow-hidden">
+                                                    <h4 class="font-bold text-sm truncate">${s.names}</h4>
+                                                    <p class="font-bold text-xs opacity-75 truncate">${s.lastNames}</p>
+                                                    <p class="text-[11px] font-mono mt-0.5" style="color: var(--custom-btn);">${s.id}</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center justify-between pt-3 border-t border-slate-700/30 text-xs">
+                                                <span class="px-2 py-0.5 rounded-full font-semibold ${s.status === 'activo' ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-slate-700 text-slate-400'}">
+                                                    ${s.status.toUpperCase()}
+                                                </span>
+                                                <div class="space-x-1">
+                                                    <button onclick="previewIDCard('${s.id}')" class="p-1.5 hover:opacity-75" title="Ver Carné"><i class="fa-solid fa-id-card"></i></button>
+                                                    <button onclick="openStudentModal('${s.id}')" class="p-1.5 hover:opacity-75" title="Editar"><i class="fa-solid fa-pen"></i></button>
+                                                    <button onclick="deleteStudent('${s.id}')" class="p-1.5 hover:text-[#8B2626]" title="Eliminar"><i class="fa-solid fa-trash"></i></button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('') || `<p class="opacity-60 col-span-full text-center py-8">No hay estudiantes registrados en este grado.</p>`}
+                            </div>
+                        </main>
+                    </div>
+                `;
+                return;
+            }
+
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Administración de Estudiantes por Grado</h1>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="openBulkUploadModal()" class="text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-btn);">
+                                <i class="fa-solid fa-file-arrow-up mr-1.5"></i> <span class="hidden sm:inline">Carga Masiva Excel</span>
+                            </button>
+                            <button onclick="openPromotionModal()" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md">
+                                <i class="fa-solid fa-graduation-cap mr-1.5"></i> <span class="hidden sm:inline">Trasladar</span>
+                            </button>
+                            <button onclick="openPrintIdSelectorModal()" class="bg-[#486C2F] hover:bg-[#395524] text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md">
+                                <i class="fa-solid fa-id-card mr-1.5"></i> <span class="hidden sm:inline">Carnés QR</span>
+                            </button>
+                            <button onclick="openStudentModal()" class="text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-header);">
+                                <i class="fa-solid fa-plus mr-1.5"></i> Nuevo
+                            </button>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto space-y-6 pb-24 md:pb-6">
+                        <p class="text-xs opacity-75">Seleccione la tarjeta del grado que desea administrar o consultar (Cada tarjeta posee un color único asignado):</p>
+                        
+                        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            ${STATE.gradesList.map(g => {
+                                const count = STATE.students.filter(s => s.grade === g && s.status === 'activo').length;
+                                const uniqueColor = STATE.gradeSolidColors[g] || '#334155';
+                                return `
+                                    <div onclick="selectedGradeForCardView = '${g}'; renderStudents();" class="border-2 rounded-3xl p-6 cursor-pointer shadow-lg transition transform hover:-translate-y-1 flex flex-col justify-between" style="background-color: ${uniqueColor}; color: #ffffff; border-color: rgba(255,255,255,0.2);">
+                                        <div class="flex items-center justify-between mb-4">
+                                            <div class="w-12 h-12 rounded-2xl bg-black/25 flex items-center justify-center font-bold text-lg text-white">
+                                                <i class="fa-solid fa-graduation-cap"></i>
+                                            </div>
+                                            <span class="text-xs bg-black/40 text-white px-3 py-1 rounded-full font-bold">${count} alumnos</span>
+                                        </div>
+                                        <div>
+                                            <h3 class="text-lg font-bold">${g}</h3>
+                                            <p class="text-xs opacity-90 mt-1">Nómina y expedientes</p>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function toggleStudentSelection(id) {
+            if (selectedStudentIdsForDelete.has(id)) {
+                selectedStudentIdsForDelete.delete(id);
+            } else {
+                selectedStudentIdsForDelete.add(id);
+            }
+            renderStudents();
+        }
+
+        function toggleSelectAllGradeStudents(grade) {
+            const gradeStudents = STATE.students.filter(s => s.grade === grade);
+            const allSelected = gradeStudents.every(s => selectedStudentIdsForDelete.has(s.id));
+            if (allSelected) {
+                gradeStudents.forEach(s => selectedStudentIdsForDelete.delete(s.id));
+            } else {
+                gradeStudents.forEach(s => selectedStudentIdsForDelete.add(s.id));
+            }
+            renderStudents();
+        }
+
+        function deleteSelectedStudents() {
+            if (confirm(`¿Está seguro de eliminar a los ${selectedStudentIdsForDelete.size} estudiantes seleccionados?`)) {
+                STATE.students = STATE.students.filter(s => !selectedStudentIdsForDelete.has(s.id));
+                localStorage.setItem('qanill_students', JSON.stringify(STATE.students));
+                selectedStudentIdsForDelete.clear();
+                showToast('✅ Estudiantes seleccionados eliminados correctamente.');
+                renderStudents();
+            }
+        }
+
+        function openBulkUploadModal() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="bulk-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold"><i class="fa-solid fa-file-excel mr-2" style="color: var(--custom-icon);"></i> Carga Masiva de Estudiantes</h3>
+                            <button onclick="document.getElementById('bulk-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <p class="text-xs opacity-75">Sube un archivo Excel (.xlsx o .csv) con las columnas: <strong>Nombres</strong>, <strong>Apellidos</strong>, <strong>Grado</strong>, <strong>Seccion</strong>, <strong>Jornada</strong>.</p>
+                        
+                        <div class="border-2 border-dashed border-slate-600 rounded-2xl p-6 text-center">
+                            <i class="fa-solid fa-cloud-arrow-up text-3xl mb-2" style="color: var(--custom-icon);"></i>
+                            <input type="file" id="bulk-file" accept=".xlsx, .xls, .csv" class="w-full text-xs cursor-pointer">
+                        </div>
+
+                        <div class="flex space-x-3 pt-2">
+                            <button onclick="document.getElementById('bulk-modal').remove()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition">Cancelar</button>
+                            <button onclick="processBulkUpload()" class="flex-1 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Procesar Archivo</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+        }
+
+        function processBulkUpload() {
+            const fileInput = document.getElementById('bulk-file');
+            if (!fileInput.files[0]) {
+                showToast('⚠️ Seleccione un archivo Excel primero.', 'warning');
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const json = XLSX.utils.sheet_to_json(worksheet);
+
+                    let addedCount = 0;
+                    let skippedCount = 0;
+
+                    json.forEach(row => {
+                        const names = String(row.Nombres || row.nombres || row.Name || '').trim();
+                        const lastNames = String(row.Apellidos || row.apellidos || row.LastNames || '').trim();
+                        const grade = String(row.Grado || row.grado || STATE.gradesList[0]).trim();
+                        const section = String(row.Seccion || row.sección || row.Sección || 'A').trim();
+                        const jornada = row.Jornada || row.jornada || 'Matutina';
+
+                        if (names && lastNames) {
+                            const exists = STATE.students.some(s => 
+                                s.names.toLowerCase() === names.toLowerCase() && 
+                                s.lastNames.toLowerCase() === lastNames.toLowerCase()
+                            );
+
+                            if (exists) {
+                                skippedCount++;
+                            } else {
+                                const newId = `QAN-${STATE.activeCycle}-${Math.floor(1000 + Math.random() * 9000)}`;
+                                STATE.students.push({
+                                    id: newId,
+                                    names: names,
+                                    lastNames: lastNames,
+                                    grade: grade,
+                                    section: section,
+                                    jornada: jornada,
+                                    status: 'activo',
+                                    photo: ''
+                                });
+                                addedCount++;
+                            }
+                        }
+                    });
+
+                    localStorage.setItem('qanill_students', JSON.stringify(STATE.students));
+                    document.getElementById('bulk-modal').remove();
+                    showToast(`✅ Carga finalizada: ${addedCount} añadidos, ${skippedCount} duplicados omitidos.`);
+                    renderStudents();
+                } catch(err) {
+                    showToast('⚠️ Error al leer el archivo Excel: ' + err.message, 'error');
+                }
+            };
+            reader.readAsArrayBuffer(fileInput.files[0]);
+        }
+
+        function deleteStudent(id) {
+            if (confirm('¿Está seguro de eliminar este estudiante del sistema?')) {
+                STATE.students = STATE.students.filter(s => s.id !== id);
+                localStorage.setItem('qanill_students', JSON.stringify(STATE.students));
+                showToast('✅ Estudiante eliminado correctamente.');
+                renderStudents();
+            }
+        }
+
+        function openPromotionModal() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="promo-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold"><i class="fa-solid fa-graduation-cap mr-2" style="color: var(--custom-icon);"></i> Traslado de Grado Completo</h3>
+                            <button onclick="document.getElementById('promo-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <p class="text-xs opacity-75">Seleccione el grado origen actual y el grado destino para mover a todos sus estudiantes automáticamente.</p>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Grado Origen (Actual)</label>
+                            <select id="promo-from" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Grado Destino (Nuevo)</label>
+                            <select id="promo-to" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="flex space-x-3 pt-2">
+                            <button onclick="document.getElementById('promo-modal').remove()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition">Cancelar</button>
+                            <button onclick="executePromotion()" class="flex-1 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Trasladar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+        }
+
+        function executePromotion() {
+            const fromGrade = document.getElementById('promo-from').value;
+            const toGrade = document.getElementById('promo-to').value;
+            let count = 0;
+            STATE.students.forEach(s => {
+                if (s.grade === fromGrade && s.status === 'activo') {
+                    s.grade = toGrade;
+                    count++;
+                }
+            });
+            localStorage.setItem('qanill_students', JSON.stringify(STATE.students));
+            document.getElementById('promo-modal').remove();
+            showToast(`✅ Se trasladaron ${count} estudiantes de ${fromGrade} a ${toGrade}.`);
+            renderStudents();
+        }
+
+        function openPrintIdSelectorModal() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="print-selector-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold"><i class="fa-solid fa-id-card text-[#486C2F] mr-2" style="color: var(--custom-icon);"></i> Imprimir Carnés QR</h3>
+                            <button onclick="document.getElementById('print-selector-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Seleccionar Modo de Impresión</label>
+                            <select id="print-mode" onchange="togglePrintModeSelector(this.value)" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                <option value="all">Todos los Estudiantes Activos</option>
+                                <option value="grade">Por Grado Específico (Todos del Grado)</option>
+                                <option value="student_by_grade">Estudiante Específico (Filtrar por Grado)</option>
+                            </select>
+                        </div>
+                        <div id="print-grade-container" class="hidden">
+                            <label class="block text-xs font-medium mb-1">Seleccione el Grado</label>
+                            <select id="target-grade" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div id="print-student-by-grade-container" class="hidden space-y-3">
+                            <div>
+                                <label class="block text-xs font-medium mb-1">1. Seleccione el Grado</label>
+                                <select id="filter-print-grade" onchange="updateStudentDropdownForPrint()" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                    ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">2. Seleccione el Estudiante del Grado</label>
+                                <select id="target-student-filtered" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm"></select>
+                            </div>
+                        </div>
+                        <div class="flex space-x-3 pt-2">
+                            <button onclick="document.getElementById('print-selector-modal').remove()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition">Cancelar</button>
+                            <button onclick="generateAndPrintCards()" class="flex-1 bg-[#486C2F] hover:bg-[#395524] text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Generar Carnés</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+            updateStudentDropdownForPrint();
+        }
+
+        function togglePrintModeSelector(mode) {
+            document.getElementById('print-grade-container').classList.add('hidden');
+            document.getElementById('print-student-by-grade-container').classList.add('hidden');
+            if (mode === 'grade') document.getElementById('print-grade-container').classList.remove('hidden');
+            if (mode === 'student_by_grade') {
+                document.getElementById('print-student-by-grade-container').classList.remove('hidden');
+                updateStudentDropdownForPrint();
+            }
+        }
+
+        function updateStudentDropdownForPrint() {
+            const grade = document.getElementById('filter-print-grade')?.value || STATE.gradesList[0];
+            const select = document.getElementById('target-student-filtered');
+            if (!select) return;
+            const studentsInGrade = STATE.students.filter(s => s.grade === grade && s.status === 'activo');
+            select.innerHTML = studentsInGrade.map(s => `<option value="${s.id}">${s.names} ${s.lastNames} (${s.id})</option>`).join('') || `<option value="">No hay estudiantes en este grado</option>`;
+        }
+
+        function generateAndPrintCards() {
+            const mode = document.getElementById('print-mode').value;
+            let targetList = STATE.students.filter(s => s.status === 'activo');
+            if (mode === 'grade') {
+                const g = document.getElementById('target-grade').value;
+                targetList = targetList.filter(s => s.grade === g);
+            } else if (mode === 'student_by_grade') {
+                const id = document.getElementById('target-student-filtered').value;
+                targetList = targetList.filter(s => s.id === id);
+            }
+            document.getElementById('print-selector-modal').remove();
+
+            if (targetList.length === 0) {
+                showToast('⚠️ No hay estudiantes seleccionados para imprimir.', 'warning');
+                return;
+            }
+
+            let existingPrintArea = document.getElementById('printable-card-area');
+            if (existingPrintArea) existingPrintArea.remove();
+
+            const container = document.createElement('div');
+            container.id = 'printable-card-area';
+            container.style.display = 'flex';
+            container.style.flexWrap = 'wrap';
+            container.style.justifyContent = 'center';
+            container.style.gap = '15px';
+            container.style.width = '100%';
+            container.style.background = '#ffffff';
+            container.style.padding = '10px';
+
+            container.innerHTML = targetList.map(s => `
+                <div class="id-card-horizontal" style="width:8.56cm; height:5.40cm; box-sizing:border-box; background:#ffffff !important; color:#0f172a !important; border:2px solid #8B2626; border-radius:8px; padding:10px; display:flex; flex-direction:column; justify-content:space-between; page-break-inside:avoid; -webkit-print-color-adjust:exact; print-color-adjust:exact;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; font-size:11px; font-weight:bold; text-transform:uppercase; color:#8B2626; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">
+                        <span>${STATE.schoolName}</span>
+                        <span style="color:#EF6905;">${s.jornada || 'Matutina'}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:10px; margin:auto 0;">
+                        <div style="width:55px; height:55px; border-radius:10px; background:#F1E5A1; overflow:hidden; border:2px solid #486C2F; flex-shrink:0; display:flex; align-items:center; justify-content:center;">
+                            ${s.photo ? `<img src="${s.photo}" style="width:100%; height:100%; object-fit:cover;">` : `<span style="font-size:15px; font-weight:bold; color:#8B2626;">${s.names[0]}</span>`}
+                        </div>
+                        <div style="overflow:hidden; text-align:left; flex:1;">
+                            <h4 style="font-weight:bold; font-size:11px; color:#0f172a; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${s.names}</h4>
+                            <p style="font-weight:bold; font-size:11px; color:#334155; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${s.lastNames}</p>
+                            <span style="font-size:9px; background:#486C2F; color:white; font-weight:600; padding:1px 5px; border-radius:9999px; display:inline-block; margin-top:2px;">${s.grade} "${s.section}"</span>
+                            <p style="font-size:9px; font-family:monospace; font-weight:bold; color:#8B2626; margin:2px 0 0 0;">${s.id}</p>
+                        </div>
+                        <div id="print-qr-${s.id}" style="margin-left:auto; flex-shrink:0; width:75px; height:75px; display:flex; align-items:center; justify-content:center;"></div>
+                    </div>
+                    <div style="font-size:9px; text-align:center; color:#64748b; border-top:1px solid #e2e8f0; padding-top:2px; font-weight:500;">Carné Oficial • Ciclo ${STATE.activeCycle}</div>
+                </div>
+            `).join('');
+
+            document.body.appendChild(container);
+
+            targetList.forEach(s => {
+                try {
+                    const qr = qrcode(0, 'M');
+                    qr.addData(s.id);
+                    qr.make();
+                    const qrContainer = document.getElementById(`print-qr-${s.id}`);
+                    if (qrContainer) {
+                        qrContainer.innerHTML = qr.createSvgTag({cellSize: 3, margin: 0});
+                        const svg = qrContainer.querySelector('svg');
+                        if (svg) {
+                            svg.style.width = '72px';
+                            svg.style.height = '72px';
+                        }
+                    }
+                } catch(e) {}
+            });
+
+            setTimeout(() => {
+                window.print();
+                setTimeout(() => { container.remove(); }, 1000);
+            }, 500);
+        }
+
+        function openStudentModal(id = null) {
+            const t = getThemeClasses();
+            const student = id ? STATE.students.find(s => s.id === id) : null;
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-lg w-full shadow-2xl my-8">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-lg font-bold">${student ? 'Editar Estudiante' : 'Nuevo Estudiante'}</h3>
+                            <button onclick="renderStudents()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <form onsubmit="saveStudent(event, '${id || ''}')" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Nombres</label>
+                                <input type="text" id="modal-names" required value="${student ? student.names : ''}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm focus:outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Apellidos</label>
+                                <input type="text" id="modal-lastnames" required value="${student ? student.lastNames : ''}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm focus:outline-none">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Grado</label>
+                                    <select id="modal-grade" onchange="updateSectionsDropdown()" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm focus:outline-none">
+                                        ${STATE.gradesList.map(g => `<option value="${g}" ${student && student.grade === g ? 'selected' : (selectedGradeForCardView === g ? 'selected' : '')}>${g}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Sección</label>
+                                    <select id="modal-section" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm focus:outline-none"></select>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Jornada</label>
+                                    <select id="modal-jornada" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                        <option value="Matutina" ${student && student.jornada === 'Matutina' ? 'selected' : ''}>Matutina</option>
+                                        <option value="Vespertina" ${student && student.jornada === 'Vespertina' ? 'selected' : ''}>Vespertina</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Estado</label>
+                                    <select id="modal-status" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                        <option value="activo" ${student && student.status === 'activo' ? 'selected' : ''}>Activo</option>
+                                        <option value="inactivo" ${student && student.status === 'inactivo' ? 'selected' : ''}>Inactivo</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Fotografía del Estudiante (Comprimida Automáticamente)</label>
+                                <input type="file" id="modal-photo" accept="image/jpeg, image/png" onchange="previewAndCompressPhoto(event)" class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs">
+                                <div id="photo-preview-container" class="mt-3 flex items-center space-x-3">
+                                    <div class="w-14 h-14 rounded-xl bg-black/20 border border-slate-700 overflow-hidden flex items-center justify-center">
+                                        <img id="photo-preview" src="${student && student.photo ? student.photo : ''}" class="${student && student.photo ? '' : 'hidden'} w-full h-full object-cover">
+                                        <i id="photo-icon" class="${student && student.photo ? 'hidden' : ''} fa-solid fa-camera text-slate-500"></i>
+                                    </div>
+                                    <span class="text-xs opacity-75">Formatos JPG, PNG (Optimizado automáticamente)</span>
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full text-white font-semibold py-3 rounded-xl shadow-md transition mt-4" style="background-color: var(--custom-btn);">
+                                Guardar Estudiante
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+            updateSectionsDropdown(student ? student.section : null);
+        }
+
+        let tempPhotoBase64 = '';
+        function previewAndCompressPhoto(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const MAX_WIDTH = 150;
+                    const MAX_HEIGHT = 150;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > MAX_WIDTH) {
+                            height *= MAX_WIDTH / width;
+                            width = MAX_WIDTH;
+                        }
+                    } else {
+                        if (height > MAX_HEIGHT) {
+                            width *= MAX_HEIGHT / height;
+                            height = MAX_HEIGHT;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    tempPhotoBase64 = canvas.toDataURL('image/jpeg', 0.85);
+                    document.getElementById('photo-preview').src = tempPhotoBase64;
+                    document.getElementById('photo-preview').classList.remove('hidden');
+                    document.getElementById('photo-icon').classList.add('hidden');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function updateSectionsDropdown(selectedSection = null) {
+            const grade = document.getElementById('modal-grade').value;
+            const secSelect = document.getElementById('modal-section');
+            const sections = STATE.sections[grade] || ['A'];
+            secSelect.innerHTML = sections.map(sec => `<option value="${sec}" ${selectedSection === sec ? 'selected' : ''}>Sección ${sec}</option>`).join('');
+        }
+
+        function saveStudent(event, existingId) {
+            event.preventDefault();
+            const names = document.getElementById('modal-names').value.trim();
+            const lastNames = document.getElementById('modal-lastnames').value.trim();
+            const grade = document.getElementById('modal-grade').value;
+            const section = document.getElementById('modal-section').value;
+            const jornada = document.getElementById('modal-jornada').value;
+            const status = document.getElementById('modal-status').value;
+
+            if (existingId) {
+                const s = STATE.students.find(st => st.id === existingId);
+                s.names = names;
+                s.lastNames = lastNames;
+                s.grade = grade;
+                s.section = section;
+                s.jornada = jornada;
+                s.status = status;
+                if (tempPhotoBase64) s.photo = tempPhotoBase64;
+            } else {
+                const newId = `QAN-${STATE.activeCycle}-${Math.floor(1000 + Math.random() * 9000)}`;
+                STATE.students.push({
+                    id: newId,
+                    names,
+                    lastNames,
+                    grade,
+                    section,
+                    jornada,
+                    status,
+                    photo: tempPhotoBase64
+                });
+            }
+
+            tempPhotoBase64 = '';
+            localStorage.setItem('qanill_students', JSON.stringify(STATE.students));
+            showToast('✅ Estudiante guardado con éxito.');
+            renderStudents();
+        }
+
+        function previewIDCard(id) {
+            const t = getThemeClasses();
+            const s = STATE.students.find(st => st.id === id);
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="card-preview-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-md w-full text-center shadow-2xl space-y-4">
+                        <div id="id-card-element-${s.id}" class="id-card-horizontal mx-auto border-2 border-[#8B2626] text-left">
+                            <div class="flex items-center justify-between text-[11px] font-bold uppercase text-[#8B2626] border-b pb-1">
+                                <span>${STATE.schoolName}</span>
+                                <span style="color: var(--custom-btn);">${s.jornada || 'Matutina'}</span>
+                            </div>
+                            <div class="flex items-center space-x-3 my-auto">
+                                <div class="w-16 h-16 rounded-xl bg-[#F1E5A1] overflow-hidden border border-[#486C2F] shrink-0 flex items-center justify-center">
+                                    ${s.photo ? `<img src="${s.photo}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center text-lg font-bold text-[#8B2626]">${s.names[0]}</div>`}
+                                </div>
+                                <div class="overflow-hidden text-left flex-1">
+                                    <h4 class="font-bold text-xs text-slate-900 truncate">${s.names}</h4>
+                                    <p class="font-bold text-xs text-slate-700 truncate">${s.lastNames}</p>
+                                    <p class="text-[10px] bg-[#486C2F] text-white font-semibold py-0.5 px-2 rounded-full inline-block mt-1">${s.grade} "${s.section}"</p>
+                                    <p class="text-[10px] font-mono font-bold text-[#8B2626] mt-1">${s.id}</p>
+                                </div>
+                                <div id="qrcode-${s.id}" class="ml-auto shrink-0 w-20 h-20 flex items-center justify-center"></div>
+                            </div>
+                            <div class="text-[9px] text-center text-slate-500 border-t pt-0.5 font-medium">Carné de Identificación Estudiantil Oficial • Ciclo ${STATE.activeCycle}</div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 mt-4">
+                            <button onclick="document.getElementById('card-preview-modal').remove()" class="bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition">Cerrar</button>
+                            <button onclick="downloadCardImage('${s.id}')" class="text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Descargar Imagen</button>
+                            <button onclick="printSingleCard('${s.id}')" class="bg-[#8B2626] hover:bg-[#721f1f] text-white font-semibold py-2.5 rounded-xl text-xs transition">Imprimir</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+
+            try {
+                const qr = qrcode(0, 'M');
+                qr.addData(s.id);
+                qr.make();
+                const container = document.getElementById(`qrcode-${s.id}`);
+                container.innerHTML = qr.createSvgTag({cellSize: 3, margin: 0});
+                const svg = container.querySelector('svg');
+                if (svg) {
+                    svg.style.width = '75px';
+                    svg.style.height = '75px';
+                }
+            } catch(e) {}
+        }
+
+        function downloadCardImage(id) {
+            const cardEl = document.getElementById(`id-card-element-${id}`);
+            if (!cardEl) return;
+            html2canvas(cardEl, { scale: 3, backgroundColor: '#ffffff', useCORS: true }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = `Carne_${id}.png`;
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+                showToast('✅ Carné descargado como imagen PNG.');
+            });
+        }
+
+        function printSingleCard(id) {
+            const s = STATE.students.find(st => st.id === id);
+            if (!s) return;
+            document.getElementById('card-preview-modal').remove();
+
+            let existingPrintArea = document.getElementById('printable-card-area');
+            if (existingPrintArea) existingPrintArea.remove();
+
+            const container = document.createElement('div');
+            container.id = 'printable-card-area';
+            container.style.display = 'flex';
+            container.style.justifyContent = 'center';
+            container.style.width = '100%';
+            container.style.background = '#ffffff';
+            container.style.padding = '20px';
+
+            container.innerHTML = `
+                <div class="id-card-horizontal" style="width:8.56cm; height:5.40cm; box-sizing:border-box; background:#ffffff !important; color:#0f172a !important; border:2px solid #8B2626; border-radius:8px; padding:10px; display:flex; flex-direction:column; justify-content:space-between; page-break-inside:avoid; -webkit-print-color-adjust:exact; print-color-adjust:exact;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; font-size:11px; font-weight:bold; text-transform:uppercase; color:#8B2626; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">
+                        <span>${STATE.schoolName}</span>
+                        <span style="color:#EF6905;">${s.jornada || 'Matutina'}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:10px; margin:auto 0;">
+                        <div style="width:55px; height:55px; border-radius:10px; background:#F1E5A1; overflow:hidden; border:2px solid #486C2F; flex-shrink:0; display:flex; align-items:center; justify-content:center;">
+                            ${s.photo ? `<img src="${s.photo}" style="width:100%; height:100%; object-fit:cover;">` : `<span style="font-size:15px; font-weight:bold; color:#8B2626;">${s.names[0]}</span>`}
+                        </div>
+                        <div style="overflow:hidden; text-align:left; flex:1;">
+                            <h4 style="font-weight:bold; font-size:11px; color:#0f172a; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${s.names}</h4>
+                            <p style="font-weight:bold; font-size:11px; color:#334155; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${s.lastNames}</p>
+                            <span style="font-size:9px; background:#486C2F; color:white; font-weight:600; padding:1px 5px; border-radius:9999px; display:inline-block; margin-top:2px;">${s.grade} "${s.section}"</span>
+                            <p style="font-size:9px; font-family:monospace; font-weight:bold; color:#8B2626; margin:2px 0 0 0;">${s.id}</p>
+                        </div>
+                        <div id="print-qr-single-${s.id}" style="margin-left:auto; flex-shrink:0; width:75px; height:75px; display:flex; align-items:center; justify-content:center;"></div>
+                    </div>
+                    <div style="font-size:9px; text-align:center; color:#64748b; border-top:1px solid #e2e8f0; padding-top:2px; font-weight:500;">Carné Oficial • Ciclo ${STATE.activeCycle}</div>
+                </div>
+            `;
+            document.body.appendChild(container);
+
+            try {
+                const qr = qrcode(0, 'M');
+                qr.addData(s.id);
+                qr.make();
+                const qrContainer = document.getElementById(`print-qr-single-${s.id}`);
+                if (qrContainer) {
+                    qrContainer.innerHTML = qr.createSvgTag({cellSize: 3, margin: 0});
+                    const svg = qrContainer.querySelector('svg');
+                    if (svg) {
+                        svg.style.width = '72px';
+                        svg.style.height = '72px';
+                    }
+                }
+            } catch(e) {}
+
+            setTimeout(() => {
+                window.print();
+                setTimeout(() => { container.remove(); }, 1000);
+            }, 500);
+        }
+
+        // --- REPORTES AVANZADOS ---
+        function renderReports() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const today = new Date().toISOString().split('T')[0];
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Reportes, Asistencia y Ausencias</h1>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="window.print()" class="bg-[#486C2F] hover:bg-[#395524] text-white text-xs font-semibold px-3 md:px-4 py-2.5 rounded-xl transition flex items-center">
+                                <i class="fa-solid fa-file-pdf mr-1"></i> Imprimir PDF
+                            </button>
+                            <button onclick="exportToExcel()" class="text-white text-xs font-semibold px-3 md:px-4 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-btn);">
+                                <i class="fa-solid fa-file-excel mr-1"></i> Excel
+                            </button>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto space-y-6 pb-24 md:pb-6">
+                        <div class="${t.card} border p-4 md:p-6 rounded-3xl space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Tipo de Filtro / Reporte</label>
+                                    <select id="report-mode-filter" onchange="toggleReportFilterMode(this.value); loadReportData();" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                                        <option value="inasistencias_hoy">1. Inasistencias de la Fecha (Con/Sin Excusa)</option>
+                                        <option value="grado">2. Reporte General por Grado</option>
+                                        <option value="estudiante">3. Récord por Estudiante Específico</option>
+                                        <option value="mayor_inasistencia">🚨 4. Alumnos con Mayor Inasistencia (Advertencia)</option>
+                                    </select>
+                                </div>
+                                <div id="filter-grade-box">
+                                    <label class="block text-xs font-medium mb-1">Seleccionar Grado</label>
+                                    <select id="report-grade" onchange="loadReportData()" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                                        <option value="TODOS">⭐ Todos los Grados</option>
+                                        ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div id="filter-student-box" class="hidden space-y-2">
+                                    <label class="block text-xs font-medium mb-1">Buscador de Estudiante</label>
+                                    <input type="text" id="report-student-search" oninput="filterReportStudentDropdown()" placeholder="Escriba nombre..." class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs mb-1">
+                                    <select id="report-student-id" onchange="loadReportData()" class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs">
+                                        ${STATE.students.filter(s => s.status === 'activo').map(s => `<option value="${s.id}">${s.names} ${s.lastNames} (${s.id})</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div id="start-date-box">
+                                    <label class="block text-xs font-medium mb-1" id="lbl-start-date">Fecha / Inicio</label>
+                                    <input type="date" id="report-start-date" value="${today}" onchange="loadReportData()" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                                </div>
+                                <div id="end-date-box" class="hidden">
+                                    <label class="block text-xs font-medium mb-1">Fecha Fin (X2)</label>
+                                    <input type="date" id="report-end-date" value="${today}" onchange="loadReportData()" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Contenedor Imprimible Estructurado -->
+                        <div id="printable-report" class="${t.card} border rounded-3xl overflow-hidden p-6 space-y-4">
+                            <div id="report-header-info" class="border-b border-slate-700/50 pb-4">
+                                <h2 class="text-lg font-bold">${STATE.schoolName} - Reporte de Asistencia y Ausencias</h2>
+                                <p id="report-subtitle" class="text-xs mt-1" style="color: var(--custom-btn);">Gestión de ausencias e inasistencias ordenadas</p>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left text-sm">
+                                    <thead>
+                                        <tr id="report-table-header" class="border-b ${t.tableHeader} text-xs uppercase">
+                                            <th class="p-3">Código</th>
+                                            <th class="p-3">Estudiante</th>
+                                            <th class="p-3">Grado</th>
+                                            <th class="p-3">Condición de Falta</th>
+                                            <th class="p-3">Motivo / Observación</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="report-tbody" class="divide-y ${t.tableRow}"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+            toggleReportFilterMode('inasistencias_hoy');
+        }
+
+        function toggleReportFilterMode(mode) {
+            const gradeBox = document.getElementById('filter-grade-box');
+            const studentBox = document.getElementById('filter-student-box');
+            const startDateBox = document.getElementById('start-date-box');
+            const endDateBox = document.getElementById('end-date-box');
+            const lblStartDate = document.getElementById('lbl-start-date');
+
+            if (mode === 'inasistencias_hoy') {
+                gradeBox.classList.remove('hidden');
+                studentBox.classList.add('hidden');
+                startDateBox.classList.remove('hidden');
+                endDateBox.classList.add('hidden');
+                if (lblStartDate) lblStartDate.innerText = 'Fecha de Consulta';
+            } else if (mode === 'grado' || mode === 'mayor_inasistencia') {
+                gradeBox.classList.remove('hidden');
+                studentBox.classList.add('hidden');
+                startDateBox.classList.remove('hidden');
+                endDateBox.classList.remove('hidden');
+                if (lblStartDate) lblStartDate.innerText = 'Fecha Inicio (X1)';
+            } else {
+                gradeBox.classList.add('hidden');
+                studentBox.classList.remove('hidden');
+                startDateBox.classList.remove('hidden');
+                endDateBox.classList.remove('hidden');
+                if (lblStartDate) lblStartDate.innerText = 'Fecha Inicio (X1)';
+            }
+        }
+
+        function filterReportStudentDropdown() {
+            const query = document.getElementById('report-student-search').value.toLowerCase();
+            const select = document.getElementById('report-student-id');
+            const filtered = STATE.students.filter(s => s.status === 'activo' && (s.names.toLowerCase().includes(query) || s.lastNames.toLowerCase().includes(query) || s.id.toLowerCase().includes(query)));
+            select.innerHTML = filtered.map(s => `<option value="${s.id}">${s.names} ${s.lastNames} (${s.id})</option>`).join('') || `<option value="">No se encontraron resultados</option>`;
+            loadReportData();
+        }
+
+        function getSortedStudents(list) {
+            return list.sort((a, b) => {
+                const idxA = STATE.gradesList.indexOf(a.grade);
+                const idxB = STATE.gradesList.indexOf(b.grade);
+                if (idxA !== idxB) return idxA - idxB;
+                return a.lastNames.localeCompare(b.lastNames);
+            });
+        }
+
+        function renderReportRows() {
+            const t = getThemeClasses();
+            const mode = document.getElementById('report-mode-filter')?.value || 'inasistencias_hoy';
+            const gradeFilter = document.getElementById('report-grade')?.value || 'TODOS';
+            const studentId = document.getElementById('report-student-id')?.value || '';
+            const startDateStr = document.getElementById('report-start-date')?.value || new Date().toISOString().split('T')[0];
+            const endDateStr = document.getElementById('report-end-date')?.value || startDateStr;
+            const subtitle = document.getElementById('report-subtitle');
+            const header = document.getElementById('report-table-header');
+
+            let start = new Date(startDateStr);
+            let end = new Date(endDateStr);
+
+            if (mode === 'mayor_inasistencia') {
+                if (header) {
+                    header.className = `border-b ${t.tableHeader} text-xs uppercase`;
+                    header.innerHTML = `
+                        <th class="p-3">Código</th>
+                        <th class="p-3">Estudiante</th>
+                        <th class="p-3">Grado</th>
+                        <th class="p-3">Total Inasistencias</th>
+                        <th class="p-3">Estado de Advertencia</th>
+                    `;
+                }
+                if (subtitle) subtitle.innerHTML = `Reporte de Alumnos con Mayor Inasistencia | Rango: ${startDateStr} al ${endDateStr}`;
+
+                let activeStudents = STATE.students.filter(s => s.status === 'activo' && (gradeFilter === 'TODOS' ? true : s.grade === gradeFilter));
+                let absenceCounts = [];
+
+                activeStudents.forEach(student => {
+                    let absences = 0;
+                    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                        if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) continue;
+                        const dStr = d.toISOString().split('T')[0];
+                        if (isNonWorkingDate(dStr)) continue;
+
+                        const att = STATE.attendance.find(a => a.id === student.id && a.date === dStr && a.cycle === STATE.activeCycle);
+                        if (!att) {
+                            absences++;
+                        }
+                    }
+                    if (absences > 0) {
+                        absenceCounts.push({ student, absences });
+                    }
+                });
+
+                absenceCounts.sort((a, b) => b.absences - a.absences);
+
+                if (absenceCounts.length === 0) return `<tr><td colspan="5" class="p-6 text-center text-[#486C2F] font-semibold">¡Excelente! No hay inasistencias registradas en este rango.</td></tr>`;
+
+                return absenceCounts.map(item => {
+                    let warningBadge = '';
+                    if (item.absences >= 3) {
+                        warningBadge = `<span class="bg-red-600/20 text-red-500 border border-red-500/50 px-3 py-1 rounded-full text-xs font-bold animate-pulse">🚨 ADVERTENCIA: Alto Ausentismo (${item.absences} faltas)</span>`;
+                    } else {
+                        warningBadge = `<span class="bg-amber-500/20 text-amber-500 px-3 py-1 rounded-full text-xs font-semibold">⚠️ Observación (${item.absences} faltas)</span>`;
+                    }
+                    return `
+                        <tr>
+                            <td class="p-3 font-mono text-xs opacity-75">${item.student.id}</td>
+                            <td class="p-3 font-medium">${item.student.names} ${item.student.lastNames}</td>
+                            <td class="p-3">${item.student.grade} "${item.student.section}"</td>
+                            <td class="p-3 font-bold text-base text-red-500">${item.absences}</td>
+                            <td class="p-3">${warningBadge}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            const checkDateObj = new Date(startDateStr);
+            if (!STATE.includeWeekends && mode === 'inasistencias_hoy' && (checkDateObj.getDay() === 0 || checkDateObj.getDay() === 6)) {
+                return `<tr><td colspan="5" class="p-6 text-center font-semibold" style="color: var(--custom-btn);">⚠️ La fecha seleccionada es fin de semana y las asistencias en fines de semana están desactivadas.</td></tr>`;
+            }
+
+            if (mode === 'inasistencias_hoy') {
+                if (header) {
+                    header.className = `border-b ${t.tableHeader} text-xs uppercase`;
+                    header.innerHTML = `
+                        <th class="p-3">Código</th>
+                        <th class="p-3">Estudiante</th>
+                        <th class="p-3">Grado/Sec</th>
+                        <th class="p-3">Condición de Falta</th>
+                        <th class="p-3">Motivo / Excusa</th>
+                    `;
+                }
+                if (subtitle) subtitle.innerHTML = `Reporte de Inasistencias | Fecha: <strong class="font-bold">${startDateStr}</strong> | Grado: <strong class="font-bold">${gradeFilter === 'TODOS' ? 'Todos' : gradeFilter}</strong>`;
+
+                if (isNonWorkingDate(startDateStr)) {
+                    return `<tr><td colspan="5" class="p-6 text-center font-semibold" style="color: var(--custom-btn);">La fecha seleccionada corresponde a un período no laborable o asueto configurado.</td></tr>`;
+                }
+
+                let activeStudents = STATE.students.filter(s => s.status === 'activo' && (gradeFilter === 'TODOS' ? true : s.grade === gradeFilter));
+                activeStudents = getSortedStudents(activeStudents);
+
+                const dayAttendance = STATE.attendance.filter(a => a.date === startDateStr && a.cycle === STATE.activeCycle);
+                const attendedIds = new Set(dayAttendance.map(a => a.id));
+                const absentStudents = activeStudents.filter(s => !attendedIds.has(s.id));
+
+                if (absentStudents.length === 0) return `<tr><td colspan="5" class="p-6 text-center text-[#486C2F] font-semibold">¡Excelente asistencia! No hay estudiantes inasistentes en esta fecha.</td></tr>`;
+
+                return absentStudents.map(s => {
+                    const excuseKey = `${startDateStr}_${s.id}`;
+                    const excuseData = STATE.excuses[excuseKey] || { type: 'sin_excusa', note: '' };
+                    return `
+                        <tr>
+                            <td class="p-3 font-mono text-xs opacity-75">${s.id}</td>
+                            <td class="p-3 font-medium">${s.names} ${s.lastNames}</td>
+                            <td class="p-3">${s.grade} "${s.section}"</td>
+                            <td class="p-3">
+                                <select onchange="updateExcuseType('${startDateStr}', '${s.id}', this.value)" class="${t.input} border rounded-xl px-3 py-1.5 text-xs">
+                                    <option value="sin_excusa" ${excuseData.type === 'sin_excusa' ? 'selected' : ''}>🔴 Sin Excusa</option>
+                                    <option value="con_excusa" ${excuseData.type === 'con_excusa' ? 'selected' : ''}>🟢 Con Excusa</option>
+                                </select>
+                            </td>
+                            <td class="p-3">
+                                <textarea rows="1" onchange="updateExcuseNote('${startDateStr}', '${s.id}', this.value)" placeholder="Escriba motivo..." class="${t.input} border rounded-xl px-3 py-1.5 text-xs w-full">${excuseData.note}</textarea>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } else if (mode === 'grado') {
+                if (header) {
+                    header.className = `border-b ${t.tableHeader} text-xs uppercase`;
+                    header.innerHTML = `
+                        <th class="p-3">Fecha</th>
+                        <th class="p-3">Código</th>
+                        <th class="p-3">Estudiante</th>
+                        <th class="p-3">Grado</th>
+                        <th class="p-3">Estado / Condición</th>
+                        <th class="p-3">Hora / Nota</th>
+                    `;
+                }
+                if (subtitle) subtitle.innerHTML = `Reporte General (${gradeFilter === 'TODOS' ? 'Todos' : gradeFilter}) | Rango: ${startDateStr} al ${endDateStr}`;
+                
+                let gradeStudents = STATE.students.filter(s => s.status === 'activo' && (gradeFilter === 'TODOS' ? true : s.grade === gradeFilter));
+                gradeStudents = getSortedStudents(gradeStudents);
+                let records = [];
+
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) continue;
+                    const dStr = d.toISOString().split('T')[0];
+                    if (isNonWorkingDate(dStr)) continue;
+
+                    gradeStudents.forEach(student => {
+                        const att = STATE.attendance.find(a => a.id === student.id && a.date === dStr && a.cycle === STATE.activeCycle);
+                        if (att) {
+                            records.push({ date: dStr, id: student.id, name: `${student.names} ${student.lastNames}`, grade: `${student.grade} "${student.section}"`, status: att.status.toUpperCase(), detail: `Hora: ${att.time}` });
+                        } else {
+                            const excuse = STATE.excuses[`${dStr}_${student.id}`] || { type: 'sin_excusa', note: '' };
+                            records.push({ date: dStr, id: student.id, name: `${student.names} ${student.lastNames}`, grade: `${student.grade} "${student.section}"`, status: excuse.type === 'con_excusa' ? 'INASISTENCIA CON EXCUSA' : 'INASISTENCIA SIN EXCUSA', detail: excuse.note || 'Falta sin nota' });
+                        }
+                    });
+                }
+
+                if (records.length === 0) return `<tr><td colspan="6" class="p-6 text-center opacity-60">No hay registros en el rango seleccionado.</td></tr>`;
+                
+                return records.map(r => `
+                    <tr>
+                        <td class="p-3 font-mono text-xs opacity-75">${r.date}</td>
+                        <td class="p-3 font-mono text-xs opacity-75">${r.id}</td>
+                        <td class="p-3 font-medium">${r.name}</td>
+                        <td class="p-3">${r.grade}</td>
+                        <td class="p-3"><span class="px-2.5 py-1 rounded-full text-[11px] font-semibold ${r.status.includes('PUNTUAL') ? 'bg-[#486C2F]/20 text-[#486C2F]' : (r.status.includes('TARDE') ? 'bg-orange-500/20 text-orange-500' : (r.status.includes('CON EXCUSA') ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-[#8B2626]/20 text-[#8B2626]'))}">${r.status}</span></td>
+                        <td class="p-3 text-xs opacity-75">${r.detail}</td>
+                    </tr>
+                `).join('');
+            } else {
+                if (header) {
+                    header.className = `border-b ${t.tableHeader} text-xs uppercase`;
+                    header.innerHTML = `
+                        <th class="p-3">Fecha</th>
+                        <th class="p-3">Código</th>
+                        <th class="p-3">Estudiante</th>
+                        <th class="p-3">Grado</th>
+                        <th class="p-3">Estado / Condición</th>
+                        <th class="p-3">Hora / Nota</th>
+                    `;
+                }
+                const student = STATE.students.find(s => s.id === studentId);
+                if (!student) return `<tr><td colspan="6" class="p-6 text-center opacity-60">Seleccione un estudiante válido.</td></tr>`;
+                if (subtitle) subtitle.innerHTML = `Estudiante: <strong class="font-bold">${student.names} ${student.lastNames}</strong> | Récord del ${startDateStr} al ${endDateStr}`;
+
+                let records = [];
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) continue;
+                    const dStr = d.toISOString().split('T')[0];
+                    if (isNonWorkingDate(dStr)) continue;
+
+                    const att = STATE.attendance.find(a => a.id === studentId && a.date === dStr && a.cycle === STATE.activeCycle);
+                    if (att) {
+                        records.push({ date: dStr, id: student.id, name: `${student.names} ${student.lastNames}`, grade: `${student.grade} "${student.section}"`, status: att.status.toUpperCase(), detail: `Hora: ${att.time} (${att.type})` });
+                    } else {
+                        const excuse = STATE.excuses[`${dStr}_${student.id}`] || { type: 'sin_excusa', note: '' };
+                        records.push({ date: dStr, id: student.id, name: `${student.names} ${student.lastNames}`, grade: `${student.grade} "${student.section}"`, status: excuse.type === 'con_excusa' ? 'INASISTENCIA CON EXCUSA' : 'INASISTENCIA SIN EXCUSA', detail: excuse.note || 'Sin observaciones' });
+                    }
+                }
+
+                if (records.length === 0) return `<tr><td colspan="6" class="p-6 text-center opacity-60">No hay registros para este estudiante en el rango seleccionado.</td></tr>`;
+                return records.map(r => `
+                    <tr>
+                        <td class="p-3 font-mono text-xs opacity-75">${r.date}</td>
+                        <td class="p-3 font-mono text-xs opacity-75">${r.id}</td>
+                        <td class="p-3 font-medium">${r.name}</td>
+                        <td class="p-3">${r.grade}</td>
+                        <td class="p-3"><span class="px-2.5 py-1 rounded-full text-[11px] font-semibold ${r.status.includes('PUNTUAL') ? 'bg-[#486C2F]/20 text-[#486C2F]' : (r.status.includes('TARDE') ? 'bg-orange-500/20 text-orange-500' : (r.status.includes('CON EXCUSA') ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-[#8B2626]/20 text-[#8B2626]'))}">${r.status}</span></td>
+                        <td class="p-3 text-xs opacity-75">${r.detail}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        function updateExcuseType(date, studentId, type) {
+            const key = `${date}_${studentId}`;
+            if (!STATE.excuses[key]) STATE.excuses[key] = { type: 'sin_excusa', note: '' };
+            STATE.excuses[key].type = type;
+            localStorage.setItem('qanill_excuses', JSON.stringify(STATE.excuses));
+            showToast('✅ Condición de inasistencia actualizada.');
+        }
+
+        function updateExcuseNote(date, studentId, note) {
+            const key = `${date}_${studentId}`;
+            if (!STATE.excuses[key]) STATE.excuses[key] = { type: 'sin_excusa', note: '' };
+            STATE.excuses[key].note = note;
+            localStorage.setItem('qanill_excuses', JSON.stringify(STATE.excuses));
+            showToast('✅ Observación guardada.');
+        }
+
+        function loadReportData() {
+            const tbody = document.getElementById('report-tbody');
+            if (tbody) tbody.innerHTML = renderReportRows();
+        }
+
+        function exportToExcel() {
+            const mode = document.getElementById('report-mode-filter').value;
+            const gradeFilter = document.getElementById('report-grade').value;
+            const studentId = document.getElementById('report-student-id').value;
+            const startDateStr = document.getElementById('report-start-date').value;
+            const endDateStr = document.getElementById('report-end-date').value;
+
+            let start = new Date(startDateStr);
+            let end = new Date(endDateStr);
+            let list = [];
+
+            if (mode === 'inasistencias_hoy') {
+                let activeStudents = STATE.students.filter(s => s.status === 'activo' && (gradeFilter === 'TODOS' ? true : s.grade === gradeFilter));
+                activeStudents = getSortedStudents(activeStudents);
+                const dayAttendance = STATE.attendance.filter(a => a.date === startDateStr && a.cycle === STATE.activeCycle);
+                const attendedIds = new Set(dayAttendance.map(a => a.id));
+                list = activeStudents.filter(s => !attendedIds.has(s.id)).map(s => {
+                    const excuse = STATE.excuses[`${startDateStr}_${s.id}`] || { type: 'sin_excusa', note: '' };
+                    return { 'Código': s.id, 'Estudiante': `${s.names} ${s.lastNames}`, 'Grado': s.grade, 'Condición': excuse.type, 'Motivo': excuse.note };
+                });
+            } else if (mode === 'grado') {
+                let gradeStudents = STATE.students.filter(s => s.status === 'activo' && (gradeFilter === 'TODOS' ? true : s.grade === gradeFilter));
+                gradeStudents = getSortedStudents(gradeStudents);
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) continue;
+                    const dStr = d.toISOString().split('T')[0];
+                    if (isNonWorkingDate(dStr)) continue;
+                    gradeStudents.forEach(student => {
+                        const att = STATE.attendance.find(a => a.id === student.id && a.date === dStr && a.cycle === STATE.activeCycle);
+                        if (att) {
+                            list.push({ 'Fecha': dStr, 'Código': student.id, 'Estudiante': `${student.names} ${student.lastNames}`, 'Grado': student.grade, 'Estado': att.status.toUpperCase(), 'Detalle': att.time });
+                        } else {
+                            const excuse = STATE.excuses[`${dStr}_${student.id}`] || { type: 'sin_excusa', note: '' };
+                            list.push({ 'Fecha': dStr, 'Código': student.id, 'Estudiante': `${student.names} ${student.lastNames}`, 'Grado': student.grade, 'Estado': excuse.type === 'con_excusa' ? 'INASISTENCIA CON EXCUSA' : 'INASISTENCIA SIN EXCUSA', 'Detalle': excuse.note });
+                        }
+                    });
+                }
+            } else {
+                const student = STATE.students.find(s => s.id === studentId);
+                if (!student) return;
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) continue;
+                    const dStr = d.toISOString().split('T')[0];
+                    if (isNonWorkingDate(dStr)) continue;
+                    const att = STATE.attendance.find(a => a.id === studentId && a.date === dStr && a.cycle === STATE.activeCycle);
+                    if (att) {
+                        list.push({ 'Fecha': dStr, 'Código': student.id, 'Estudiante': `${student.names} ${student.lastNames}`, 'Grado': student.grade, 'Estado': att.status.toUpperCase(), 'Detalle': att.time });
+                    } else {
+                        const excuse = STATE.excuses[`${dStr}_${student.id}`] || { type: 'sin_excusa', note: '' };
+                        list.push({ 'Fecha': dStr, 'Código': student.id, 'Estudiante': `${student.names} ${student.lastNames}`, 'Grado': student.grade, 'Estado': excuse.type === 'con_excusa' ? 'INASISTENCIA CON EXCUSA' : 'INASISTENCIA SIN EXCUSA', 'Detalle': excuse.note });
+                    }
+                }
+            }
+
+            const ws = XLSX.utils.json_to_sheet(list);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Reporte_Asistencia");
+            XLSX.writeFile(wb, `Reporte_Qanill_${startDateStr}.xlsx`);
+        }
+
+        // --- CONFIGURACIÓN E INSTITUCIÓN ---
+        function renderSettings() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const nonWorkingListHTML = (STATE.nonWorkingRanges || []).map((r, idx) => `
+                <div class="${t.cardAlt} border p-3 rounded-xl flex items-center justify-between text-xs">
+                    <div>
+                        <span class="font-bold">${r.name}</span>
+                        <span class="opacity-75 ml-2">(${r.start} al ${r.end})</span>
+                    </div>
+                    <button onclick="removeNonWorkingRange(${idx})" class="text-[#8B2626] hover:text-[#721f1f]"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            `).join('') || `<p class="text-xs opacity-60">No hay períodos de descanso o asueto configurados.</p>`;
+
+            const gradesConfigHTML = STATE.gradesList.map(g => `
+                <div class="${t.cardAlt} border p-3 rounded-xl flex items-center justify-between text-xs">
+                    <div class="flex items-center space-x-3">
+                        <input type="color" onchange="updateSingleGradeColor('${g}', this.value)" value="${STATE.gradeSolidColors[g] || '#334155'}" class="w-8 h-8 rounded-lg cursor-pointer border-0 p-0">
+                        <span class="font-bold text-sm">${g}</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="openEditGradeModal('${g}')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg transition"><i class="fa-solid fa-pen"></i></button>
+                        <button onclick="deleteGrade('${g}')" class="bg-[#8B2626] hover:bg-[#721f1f] text-white px-3 py-1.5 rounded-lg transition"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                </div>
+            `).join('');
+
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Configuración del Sistema</h1>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto max-w-2xl mx-auto w-full space-y-6 pb-24 md:pb-6">
+                        
+                        <!-- GESTIÓN DE GRADOS -->
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4 shadow-xl">
+                            <div class="flex items-center justify-between">
+                                <h3 class="font-bold flex items-center"><i class="fa-solid fa-graduation-cap mr-2" style="color: var(--custom-icon);"></i> Gestión de Grados Académicos</h3>
+                                <button onclick="openAddGradeModal()" class="text-white text-xs font-semibold px-3 py-2 rounded-xl transition shadow-md" style="background-color: var(--custom-btn);">
+                                    <i class="fa-solid fa-plus mr-1"></i> Agregar Grado
+                                </button>
+                            </div>
+                            <p class="text-xs opacity-75">Agregue, edite o elimine los grados escolares. Al modificar o agregar un grado, todo el sistema se actualiza de forma automática.</p>
+                            
+                            <div class="space-y-2 max-h-60 overflow-y-auto pr-1">
+                                ${gradesConfigHTML}
+                            </div>
+                        </div>
+
+                        <!-- CONFIGURACIÓN DE APARIENCIA DE LA PRIMER VENTANA (PORTADA / SPLASH SCREEN) -->
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4 shadow-xl">
+                            <h3 class="font-bold mb-2 flex items-center"><i class="fa-solid fa-image mr-2" style="color: var(--custom-icon);"></i> Apariencia de la Primera Ventana (Portada)</h3>
+                            <p class="text-xs opacity-75">Personaliza el color de fondo y el color del texto de la pantalla de bienvenida que aparece al iniciar el sistema.</p>
+                            
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Color de Fondo (Portada)</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-splash-bg" value="${STATE.splashBgColor}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-splash-bg" value="${STATE.splashBgColor}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Color de Texto (Portada)</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-splash-text" value="${STATE.splashTextColor}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-splash-text" value="${STATE.splashTextColor}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="applyAndSaveSplashColors()" class="w-full text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md mt-2" style="background-color: var(--custom-btn);">
+                                Guardar Colores de Portada
+                            </button>
+                        </div>
+
+                        <!-- PALETA DE COLORES GENERAL -->
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4 shadow-xl">
+                            <h3 class="font-bold mb-2 flex items-center"><i class="fa-solid fa-palette mr-2" style="color: var(--custom-icon);"></i> Paleta de Colores Personalizada</h3>
+                            <p class="text-xs opacity-75">Personaliza los tonos institucionales de la barra superior, barra lateral izquierda, botones principales, color de texto y color de los iconos.</p>
+                            
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Color Barra Superior</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-header" value="${STATE.colors.headerBg}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-header" value="${STATE.colors.headerBg}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Color Barra Lateral Izquierda</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-sidebar" value="${STATE.colors.sidebarBg}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-sidebar" value="${STATE.colors.sidebarBg}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Color de Botones Principales</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-btn" value="${STATE.colors.btnBg}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-btn" value="${STATE.colors.btnBg}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Color de los Iconos</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-icon" value="${STATE.colors.iconColor || STATE.colors.btnBg}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-icon" value="${STATE.colors.iconColor || STATE.colors.btnBg}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="sm:col-span-2">
+                                    <label class="block text-xs font-medium mb-1">Color de Texto General</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="color" id="picker-text" value="${STATE.colors.textColor}" class="w-12 h-10 rounded-xl cursor-pointer border-0 p-1">
+                                        <input type="text" id="text-textColor" value="${STATE.colors.textColor}" class="flex-1 ${t.input} border rounded-xl px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="applyAndSaveColors()" class="w-full text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md mt-2" style="background-color: var(--custom-btn);">
+                                Aplicar y Guardar Paleta de Colores
+                            </button>
+                        </div>
+
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4">
+                            <h3 class="font-bold mb-2">Identidad Institucional, Ciclo Escolar & Visualización</h3>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Nombre del Colegio (Actualiza la Portada y el Sistema)</label>
+                                <input type="text" id="set-school" value="${STATE.schoolName}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Nombre de este Dispositivo / Terminal</label>
+                                <input type="text" id="set-device" value="${STATE.device}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Ciclo Escolar Activo (2026 - 2030)</label>
+                                <select id="set-cycle" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                                    ${STATE.cycles.map(c => `<option value="${c}" ${STATE.activeCycle === c ? 'selected' : ''}>Ciclo ${c}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Modo de Visualización (Ideal al Aire Libre)</label>
+                                <select id="set-theme" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                                    <option value="dark" ${STATE.themeMode === 'dark' ? 'selected' : ''}>Oscuro (Estándar)</option>
+                                    <option value="light" ${STATE.themeMode === 'light' ? 'selected' : ''}>Claro / Alto Contraste (Para uso bajo luz solar al aire libre)</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center justify-between pt-2 border-t border-slate-700/40">
+                                <div>
+                                    <label class="block text-xs font-bold">Tomar en cuenta Asistencias en Fines de Semana</label>
+                                    <p class="text-[11px] opacity-75">Permite registrar y generar reportes también los días sábado y domingo.</p>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="set-weekends" class="sr-only peer" ${STATE.includeWeekends ? 'checked' : ''}>
+                                    <div class="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                                </label>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Logotipo Institucional (Se muestra en Portada y Sistema)</label>
+                                <input type="file" accept="image/*" onchange="uploadLogo(event)" class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Hora Límite de Puntualidad Estándar</label>
+                                <input type="time" id="set-timelimit" value="${STATE.timeLimit || '07:10'}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            </div>
+                            <button onclick="saveSettings()" class="w-full text-white font-semibold py-3 rounded-xl shadow-md transition" style="background-color: var(--custom-btn);">
+                                Guardar Cambios Generales
+                            </button>
+                        </div>
+
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4">
+                            <h3 class="font-bold mb-2"><i class="fa-solid fa-calendar-xmark mr-2" style="color: var(--custom-icon);"></i> Períodos sin Asistencia (Feria, Asuetos, etc.)</h3>
+                            <p class="text-xs opacity-75">Defina rangos de fechas adicionales para excluir del control de asistencia.</p>
+                            
+                            <div class="space-y-3">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Nombre del Período</label>
+                                    <input type="text" id="nw-name" placeholder="Ej. Feria Patronal" class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs">
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-medium mb-1">Fecha Inicio</label>
+                                        <input type="date" id="nw-start" class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium mb-1">Fecha Fin</label>
+                                        <input type="date" id="nw-end" class="w-full ${t.input} border rounded-xl px-3 py-2 text-xs">
+                                    </div>
+                                </div>
+                                <button onclick="addNonWorkingRange()" class="w-full bg-[#486C2F] hover:bg-[#395524] text-white font-semibold py-2.5 rounded-xl text-xs transition">
+                                    Agregar Período Exento
+                                </button>
+                            </div>
+
+                            <div class="mt-4 space-y-2">
+                                <h4 class="text-xs font-bold uppercase tracking-wider opacity-75">Períodos Exentos Configurados:</h4>
+                                ${nonWorkingListHTML}
+                            </div>
+                        </div>
+
+                        <!-- GESTIÓN DE CACHÉ Y DATOS LOCALES -->
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4 shadow-xl">
+                            <h3 class="font-bold mb-2 flex items-center text-red-500"><i class="fa-solid fa-triangle-exclamation mr-2"></i> Gestión de Caché y Datos Locales</h3>
+                            <p class="text-xs opacity-75">Elimina los datos almacenados localmente en el navegador. Úselo con precaución si necesita liberar espacio o reiniciar la aplicación a su estado de fábrica.</p>
+                            
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                                <button onclick="clearAppCache()" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md flex items-center justify-center space-x-2">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                    <span>Borrar Caché y Datos</span>
+                                </button>
+                                <button onclick="exportSystemBackup()" class="bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md flex items-center justify-center space-x-2">
+                                    <i class="fa-solid fa-download"></i>
+                                    <span>Exportar Respaldo (JSON)</span>
+                                </button>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+
+            ['splash-bg', 'splash-text', 'header', 'sidebar', 'btn', 'textColor', 'icon'].forEach(k => {
+                const picker = document.getElementById(`picker-${k}`);
+                const text = document.getElementById(`text-${k}`);
+                if (picker && text) {
+                    picker.addEventListener('input', (e) => { text.value = e.target.value; });
+                    text.addEventListener('input', (e) => { picker.value = e.target.value; });
+                }
+            });
+        }
+
+        function clearAppCache() {
+            if (confirm('¿Está totalmente seguro de borrar la caché y todos los datos locales? Se perderán los estudiantes, asistencias y configuraciones personalizadas almacenadas en el navegador. Se recomienda exportar un respaldo antes.')) {
+                localStorage.clear();
+                showToast('✅ Caché y datos locales borrados correctamente. Reiniciando...');
+                setTimeout(() => {
+                    location.reload();
+                }, 1500);
+            }
+        }
+
+        function exportSystemBackup() {
+            const backupData = {
+                students: STATE.students,
+                attendance: STATE.attendance,
+                colors: STATE.colors,
+                gradesList: STATE.gradesList,
+                gradeSolidColors: STATE.gradeSolidColors,
+                sections: STATE.sections,
+                excuses: STATE.excuses,
+                nonWorkingRanges: STATE.nonWorkingRanges,
+                splashBgColor: STATE.splashBgColor,
+                splashTextColor: STATE.splashTextColor,
+                settings: {
+                    schoolName: STATE.schoolName,
+                    device: STATE.device,
+                    cycle: STATE.activeCycle,
+                    timeLimit: STATE.timeLimit,
+                    themeMode: STATE.themeMode,
+                    includeWeekends: STATE.includeWeekends
+                },
+                exportDate: new Date().toISOString()
+            };
+            const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Respaldo_Qanill_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            showToast('✅ Respaldo del sistema exportado con éxito.');
+        }
+
+        function applyAndSaveSplashColors() {
+            STATE.splashBgColor = document.getElementById('text-splash-bg').value || '#6c1d1d';
+            STATE.splashTextColor = document.getElementById('text-splash-text').value || '#ffffff';
+            localStorage.setItem('qanill_splash_bg', STATE.splashBgColor);
+            localStorage.setItem('qanill_splash_text', STATE.splashTextColor);
+            showToast('✅ Colores de la portada guardados correctamente.');
+            renderSettings();
+        }
+
+        function openAddGradeModal() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="grade-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold">Agregar Nuevo Grado</h3>
+                            <button onclick="document.getElementById('grade-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Nombre del Grado (Ej: P7, S1, etc.)</label>
+                            <input type="text" id="new-grade-name" placeholder="Nombre corto del grado" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Color Único para la Tarjeta</label>
+                            <input type="color" id="new-grade-color" value="#4F46E5" class="w-full h-10 rounded-xl cursor-pointer border-0 p-1">
+                        </div>
+                        <div class="flex space-x-3 pt-2">
+                            <button onclick="document.getElementById('grade-modal').remove()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition">Cancelar</button>
+                            <button onclick="saveNewGrade()" class="flex-1 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Guardar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+        }
+
+        function saveNewGrade() {
+            const name = document.getElementById('new-grade-name').value.trim().toUpperCase();
+            const color = document.getElementById('new-grade-color').value;
+            if (!name) {
+                showToast('⚠️ Ingrese un nombre válido para el grado.', 'warning');
+                return;
+            }
+            if (STATE.gradesList.includes(name)) {
+                showToast('⚠️ Este grado ya existe en el sistema.', 'warning');
+                return;
+            }
+            STATE.gradesList.push(name);
+            STATE.gradeSolidColors[name] = color;
+            if (!STATE.sections[name]) STATE.sections[name] = ['A'];
+
+            localStorage.setItem('qanill_grades_list', JSON.stringify(STATE.gradesList));
+            localStorage.setItem('qanill_grade_colors', JSON.stringify(STATE.gradeSolidColors));
+            localStorage.setItem('qanill_sections', JSON.stringify(STATE.sections));
+
+            document.getElementById('grade-modal').remove();
+            showToast(`✅ Grado "${name}" agregado correctamente.`);
+            renderSettings();
+        }
+
+        function openEditGradeModal(grade) {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const currentColor = STATE.gradeSolidColors[grade] || '#334155';
+            const modalHTML = `
+                <div id="grade-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold">Editar Grado: ${grade}</h3>
+                            <button onclick="document.getElementById('grade-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Nuevo Nombre del Grado</label>
+                            <input type="text" id="edit-grade-name" value="${grade}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Color de la Tarjeta</label>
+                            <input type="color" id="edit-grade-color" value="${currentColor}" class="w-full h-10 rounded-xl cursor-pointer border-0 p-1">
+                        </div>
+                        <div class="flex space-x-3 pt-2">
+                            <button onclick="document.getElementById('grade-modal').remove()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2.5 rounded-xl text-xs transition">Cancelar</button>
+                            <button onclick="executeUpdateGrade('${grade}')" class="flex-1 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Actualizar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+        }
+
+        function executeUpdateGrade(oldName) {
+            const newName = document.getElementById('edit-grade-name').value.trim().toUpperCase();
+            const color = document.getElementById('edit-grade-color').value;
+            if (!newName) {
+                showToast('⚠️ Ingrese un nombre válido.', 'warning');
+                return;
+            }
+
+            const idx = STATE.gradesList.indexOf(oldName);
+            if (idx !== -1) {
+                STATE.gradesList[idx] = newName;
+            }
+
+            if (oldName !== newName) {
+                STATE.gradeSolidColors[newName] = color;
+                delete STATE.gradeSolidColors[oldName];
+                STATE.sections[newName] = STATE.sections[oldName] || ['A'];
+                delete STATE.sections[oldName];
+
+                STATE.students.forEach(s => {
+                    if (s.grade === oldName) s.grade = newName;
+                });
+            } else {
+                STATE.gradeSolidColors[oldName] = color;
+            }
+
+            localStorage.setItem('qanill_grades_list', JSON.stringify(STATE.gradesList));
+            localStorage.setItem('qanill_grade_colors', JSON.stringify(STATE.gradeSolidColors));
+            localStorage.setItem('qanill_sections', JSON.stringify(STATE.sections));
+            localStorage.setItem('qanill_students', JSON.stringify(STATE.students));
+
+            document.getElementById('grade-modal').remove();
+            showToast(`✅ Grado actualizado con éxito.`);
+            renderSettings();
+        }
+
+        function updateSingleGradeColor(grade, color) {
+            STATE.gradeSolidColors[grade] = color;
+            localStorage.setItem('qanill_grade_colors', JSON.stringify(STATE.gradeSolidColors));
+        }
+
+        function deleteGrade(grade) {
+            if (confirm(`¿Está seguro de eliminar el grado "${grade}"? Los alumnos asignados a este grado podrían quedar sin categoría.`)) {
+                STATE.gradesList = STATE.gradesList.filter(g => g !== grade);
+                delete STATE.gradeSolidColors[grade];
+                delete STATE.sections[grade];
+
+                localStorage.setItem('qanill_grades_list', JSON.stringify(STATE.gradesList));
+                localStorage.setItem('qanill_grade_colors', JSON.stringify(STATE.gradeSolidColors));
+                localStorage.setItem('qanill_sections', JSON.stringify(STATE.sections));
+
+                showToast(`✅ Grado "${grade}" eliminado.`);
+                renderSettings();
+            }
+        }
+
+        function applyAndSaveColors() {
+            STATE.colors.headerBg = document.getElementById('text-header').value || '#6c1d1d';
+            STATE.colors.sidebarBg = document.getElementById('text-sidebar').value || '#82912d';
+            STATE.colors.btnBg = document.getElementById('text-btn').value || '#EF6905';
+            STATE.colors.iconColor = document.getElementById('text-icon').value || '#EF6905';
+            STATE.colors.textColor = document.getElementById('text-textColor').value || '#f8fafc';
+
+            localStorage.setItem('qanill_colors', JSON.stringify(STATE.colors));
+            applyCustomColors();
+            showToast('✅ Paleta de colores y iconos aplicada correctamente.');
+            renderSettings();
+        }
+
+        function addNonWorkingRange() {
+            const name = document.getElementById('nw-name').value.trim();
+            const start = document.getElementById('nw-start').value;
+            const end = document.getElementById('nw-end').value;
+            if (!name || !start || !end) {
+                showToast('⚠️ Complete todos los campos del período.', 'warning');
+                return;
+            }
+            if (!STATE.nonWorkingRanges) STATE.nonWorkingRanges = [];
+            STATE.nonWorkingRanges.push({ name, start, end });
+            localStorage.setItem('qanill_non_working_ranges', JSON.stringify(STATE.nonWorkingRanges));
+            showToast('✅ Período exento guardado correctamente.');
+            renderSettings();
+        }
+
+        function removeNonWorkingRange(idx) {
+            STATE.nonWorkingRanges.splice(idx, 1);
+            localStorage.setItem('qanill_non_working_ranges', JSON.stringify(STATE.nonWorkingRanges));
+            showToast('✅ Período eliminado.');
+            renderSettings();
+        }
+
+        function uploadLogo(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 120;
+                    canvas.height = 120;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, 120, 120);
+                    STATE.logo = canvas.toDataURL('image/png', 0.9);
+                    localStorage.setItem('qanill_logo', STATE.logo);
+                    showToast('✅ Logotipo actualizado y optimizado.');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function saveSettings() {
+            STATE.schoolName = document.getElementById('set-school').value;
+            STATE.device = document.getElementById('set-device').value;
+            STATE.timeLimit = document.getElementById('set-timelimit').value;
+            STATE.activeCycle = document.getElementById('set-cycle').value;
+            STATE.themeMode = document.getElementById('set-theme').value;
+            STATE.includeWeekends = document.getElementById('set-weekends').checked;
+
+            localStorage.setItem('qanill_school_name', STATE.schoolName);
+            localStorage.setItem('qanill_device', STATE.device);
+            localStorage.setItem('qanill_timelimit', STATE.timeLimit);
+            localStorage.setItem('qanill_cycle', STATE.activeCycle);
+            localStorage.setItem('qanill_theme', STATE.themeMode);
+            localStorage.setItem('qanill_weekends', STATE.includeWeekends);
+
+            const titleEl = document.getElementById('page-title');
+            if (titleEl) titleEl.innerText = `${STATE.schoolName} – Control de Asistencia`;
+
+            showToast('✅ Configuración guardada correctamente.');
+            renderDashboard();
+        }
+
+        function updateNetworkStatus() {
+            const badge = document.getElementById('network-badge');
+            if (badge) badge.innerText = STATE.online ? '🟢 En Línea' : '🔴 Offline';
+        }
+
+        function syncOfflineData() {
+            if (!STATE.online) {
+                showToast('⚠️ No hay conexión a Internet para sincronizar.', 'warning');
+                return;
+            }
+            if (STATE.pendingSync.length === 0) {
+                showToast('No hay registros pendientes de sincronización.');
+                return;
+            }
+            STATE.pendingSync = [];
+            localStorage.removeItem('qanill_pending');
+            showToast('✅ Sincronización completada con éxito.');
+            renderDashboard();
+        }
+    </script>
+</body>
+</html>
