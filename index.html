@@ -37,7 +37,6 @@
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         textarea { resize: vertical; min-height: 38px; }
         
-        /* Tamaño exacto de Carné ID Horizontal CR80: 8.56 cm x 5.40 cm */
         .id-card-horizontal {
             width: 8.56cm;
             height: 5.40cm;
@@ -102,27 +101,46 @@
         }
     </style>
 </head>
-<body class="h-full flex flex-col overflow-hidden">
+<body class="h-full flex flex-col overflow-hidden bg-slate-950">
     <!-- Contenedor de Notificaciones Toast -->
     <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
 
     <!-- APP ROOT CONTAINER -->
-    <div id="app" class="flex-1 flex flex-col h-full w-full overflow-hidden relative"></div>
+    <div id="app" class="flex-1 flex flex-col h-full w-full overflow-hidden relative">
+        <!-- PORTADA INICIAL DE CARGA INMEDIATA EN HTML -->
+        <div id="initial-splash" class="absolute inset-0 flex flex-col items-center justify-center p-6 z-50 text-center transition-colors duration-500" style="background-color: #6c1d1d; color: #ffffff;">
+            <div class="w-24 h-24 rounded-3xl flex items-center justify-center shadow-2xl mb-6 animate-bounce bg-white/10 backdrop-blur-md border border-white/20 overflow-hidden">
+                <i class="fa-solid fa-graduation-cap text-5xl text-white"></i>
+            </div>
+            <h1 class="text-3xl md:text-4xl font-extrabold tracking-wide drop-shadow-md">Eco School Q'anill</h1>
+            <p class="text-sm md:text-base mt-2 font-medium tracking-wide opacity-90">Sistema Inteligente en la Nube</p>
+            
+            <div class="mt-8 w-48 bg-black/30 h-2 rounded-full overflow-hidden mx-auto border border-white/20">
+                <div id="loading-bar-init" class="h-full w-1/3 animate-pulse rounded-full" style="background-color: #EF6905;"></div>
+            </div>
+            <p class="text-xs mt-3 opacity-80">Conectando con la base de datos...</p>
+        </div>
+    </div>
 
     <!-- SCRIPT PRINCIPAL DE LA APLICACIÓN -->
     <script>
-        // CONFIGURACIÓN DE SUPABASE (Nube en tiempo real)
+        // CONFIGURACIÓN DE SUPABASE (Reemplazar SUPABASE_KEY con la clave completa)
         const SUPABASE_URL = 'https://vejjewvznfnrtlopubs.supabase.co';
-        const SUPABASE_KEY = 'sb_publishable_cs3SLyKIvc4evF6xvcJheg_JqwNT...'; // Tu Publishable key
-        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        const SUPABASE_KEY = 'sb_publishable_cs3SLyKIvc4evF6xvcJheg_JqwNT...'; // Pega aquí tu Publishable key completa
+        
+        let supabaseClient = null;
+        try {
+            supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        } catch(e) {
+            console.error("Error al inicializar el cliente de Supabase:", e);
+        }
 
-        // Control de Versión
-        const APP_VERSION = '1.3';
+        const APP_VERSION = '1.4';
         if (localStorage.getItem('qanill_version') !== APP_VERSION) {
             localStorage.setItem('qanill_version', APP_VERSION);
         }
 
-        // Estado Global de la Aplicación
+        // Estado Global
         const STATE = {
             user: null,
             role: null, 
@@ -217,19 +235,32 @@
         window.addEventListener('online', () => { STATE.online = true; updateNetworkStatus(); });
         window.addEventListener('offline', () => { STATE.online = false; updateNetworkStatus(); });
 
-        document.addEventListener('DOMContentLoaded', async () => {
-            applyCustomColors();
-            initServiceWorker();
-            await loadDataFromCloud();
-            subscribeToRealtimeAttendance();
-            renderSplashWelcome();
+        // INICIALIZACIÓN DE CARGA RÁPIDA
+        document.addEventListener('readystatechange', async () => {
+            if (document.readyState === 'interactive' || document.readyState === 'complete') {
+                if (window._qanillInitialized) return;
+                window._qanillInitialized = true;
+
+                applyCustomColors();
+                initServiceWorker();
+                
+                // Cargar datos de la nube en segundo plano
+                await loadDataFromCloud();
+                subscribeToRealtimeChanges();
+
+                setTimeout(() => {
+                    renderLogin();
+                }, 1500);
+            }
         });
 
-        // --- CARGA Y SINCRONIZACIÓN CON SUPABASE ---
+        // CARGA COMPLETA DESDE LA NUBE DE SUPABASE
         async function loadDataFromCloud() {
+            if (!supabaseClient) return;
             try {
+                // Obtener Estudiantes
                 const { data: studentsData, error: errSt } = await supabaseClient.from('students').select('*');
-                if (!errSt && studentsData && studentsData.length > 0) {
+                if (!errSt && studentsData) {
                     STATE.students = studentsData.map(s => ({
                         id: s.id,
                         names: s.names,
@@ -240,13 +271,9 @@
                         status: s.status || 'activo',
                         photo: s.photo || ''
                     }));
-                } else if (STATE.students.length === 0) {
-                    STATE.students = [
-                        { id: 'QAN-2026-1001', names: 'Carlos Eduardo', lastNames: 'López Gómez', grade: 'B5 DG', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' },
-                        { id: 'QAN-2026-1002', names: 'María Fernanda', lastNames: 'Morales Ruiz', grade: 'B5 DG', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' }
-                    ];
                 }
 
+                // Obtener Asistencia del Día
                 const today = new Date().toISOString().split('T')[0];
                 const { data: attendanceData, error: errAtt } = await supabaseClient.from('attendance').select('*').eq('date', today);
                 if (!errAtt && attendanceData) {
@@ -262,14 +289,17 @@
                     }));
                 }
             } catch (e) {
-                console.error('Error conectando a Supabase:', e);
+                console.error('Error al conectar a Supabase:', e);
             }
         }
 
-        function subscribeToRealtimeAttendance() {
+        // SUSCRIPCIÓN EN TIEMPO REAL (MULTI-DISPOSITIVO)
+        function subscribeToRealtimeChanges() {
+            if (!supabaseClient) return;
             try {
+                // Escuchar Asistencias en tiempo real
                 supabaseClient
-                    .channel('schema-db-changes')
+                    .channel('public:attendance')
                     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, payload => {
                         const newRecord = payload.new;
                         const today = new Date().toISOString().split('T')[0];
@@ -287,7 +317,7 @@
                                     cycle: newRecord.cycle
                                 });
                                 playSound('success');
-                                showToast(`🔔 Nueva marcación desde ${newRecord.device}`);
+                                showToast(`🔔 Nueva marcación recibida de ${newRecord.device}`);
                                 if (document.getElementById('dashboard-chart-canvas')) {
                                     renderDashboard();
                                 }
@@ -295,12 +325,26 @@
                         }
                     })
                     .subscribe();
-            } catch(e) {}
+
+                // Escuchar cambios de Estudiantes en tiempo real
+                supabaseClient
+                    .channel('public:students')
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'students' }, async () => {
+                        await loadDataFromCloud();
+                        if (document.getElementById('manual-results') || document.getElementById('dashboard-chart-canvas')) {
+                            renderDashboard();
+                        }
+                    })
+                    .subscribe();
+            } catch(e) {
+                console.error("Error al suscribirse a Realtime:", e);
+            }
         }
 
         async function saveAttendanceRecordToCloud(record) {
+            if (!supabaseClient) return;
             try {
-                await supabaseClient.from('attendance').insert([{
+                const { error } = await supabaseClient.from('attendance').insert([{
                     student_id: record.id,
                     date: record.date,
                     time: record.time,
@@ -310,14 +354,16 @@
                     user_role: record.user,
                     cycle: record.cycle
                 }]);
+                if (error) console.error("Error al insertar marcación:", error.message);
             } catch(e) {
-                console.error('Error al guardar en nube:', e);
+                console.error('Error al enviar a la nube:', e);
             }
         }
 
         async function saveStudentToCloud(student) {
+            if (!supabaseClient) return;
             try {
-                await supabaseClient.from('students').upsert([{
+                const { error } = await supabaseClient.from('students').upsert([{
                     id: student.id,
                     names: student.names,
                     last_names: student.lastNames,
@@ -327,18 +373,21 @@
                     status: student.status,
                     photo: student.photo
                 }]);
+                if (error) console.error("Error guardando estudiante en nube:", error.message);
             } catch(e) {
-                console.error('Error al guardar estudiante en nube:', e);
+                console.error('Error guardando estudiante:', e);
             }
         }
 
         async function deleteStudentFromCloud(id) {
+            if (!supabaseClient) return;
             try {
                 await supabaseClient.from('students').delete().eq('id', id);
             } catch(e) {}
         }
 
         async function deleteAttendanceFromCloud(studentId, date) {
+            if (!supabaseClient) return;
             try {
                 await supabaseClient.from('attendance').delete().eq('student_id', studentId).eq('date', date);
             } catch(e) {}
@@ -381,39 +430,6 @@
             } catch(e) {}
         }
 
-        // --- SPLASH SCREEN ---
-        function renderSplashWelcome() {
-            const app = document.getElementById('app');
-            document.body.className = `h-full flex flex-col overflow-hidden bg-slate-950`;
-            app.innerHTML = `
-                <div class="absolute inset-0 flex flex-col items-center justify-center p-6 z-50 text-center transition-colors duration-500" style="background-color: ${STATE.splashBgColor}; color: ${STATE.splashTextColor};">
-                    <div class="w-24 h-24 rounded-3xl flex items-center justify-center shadow-2xl mb-6 animate-bounce bg-white/10 backdrop-blur-md border border-white/20 overflow-hidden">
-                        ${STATE.logo ? `<img src="${STATE.logo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-graduation-cap text-5xl" style="color: ${STATE.splashTextColor};"></i>`}
-                    </div>
-                    <h1 class="text-3xl md:text-4xl font-extrabold tracking-wide drop-shadow-md">${STATE.schoolName}</h1>
-                    <p class="text-sm md:text-base mt-2 font-medium tracking-wide opacity-90">Sistema Inteligente en la Nube</p>
-                    
-                    <div class="mt-8 w-48 bg-black/30 h-2 rounded-full overflow-hidden mx-auto border border-white/20">
-                        <div id="loading-bar" class="h-full w-0 transition-all duration-1000 rounded-full" style="background-color: var(--custom-btn, #EF6905);"></div>
-                    </div>
-                    <p class="text-xs mt-3 animate-pulse opacity-80">Sincronizando base de datos...</p>
-
-                    <div class="absolute bottom-6 text-xs opacity-75">
-                        Ciclo Escolar Activo: <span class="font-bold">${STATE.activeCycle}</span>
-                    </div>
-                </div>
-            `;
-
-            setTimeout(() => {
-                const bar = document.getElementById('loading-bar');
-                if (bar) bar.style.width = '100%';
-            }, 100);
-
-            setTimeout(() => {
-                renderLogin();
-            }, 2200);
-        }
-
         // --- AUTENTICACIÓN ---
         function renderLogin() {
             const t = getThemeClasses();
@@ -446,9 +462,6 @@
                             <button onclick="handleLogin()" class="w-full text-white font-semibold py-3.5 rounded-xl shadow-lg transition-all duration-200 mt-2" style="background-color: var(--custom-btn);">
                                 Iniciar Sesión
                             </button>
-                        </div>
-                        <div class="mt-6 text-center text-xs opacity-75">
-                            <button onclick="renderSplashWelcome()" class="underline text-xs">Volver a portada</button>
                         </div>
                     </div>
                 </div>
@@ -497,7 +510,7 @@
                             </div>`}
                             <div>
                                 <h1 class="text-sm md:text-base font-bold">${STATE.schoolName}</h1>
-                                <p class="text-[11px] md:text-xs opacity-90">${STATE.device} • <span id="network-badge">${STATE.online ? '🟢 Nube Conectada' : '🔴 Offline'}</span></p>
+                                <p class="text-[11px] md:text-xs opacity-90">${STATE.device} • <span id="network-badge">${STATE.online ? '🟢 Sincronizado' : '🔴 Offline'}</span></p>
                             </div>
                         </div>
                         <div class="flex items-center space-x-3">
@@ -570,7 +583,7 @@
                                 <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-700/40 pb-4">
                                     <div>
                                         <h3 class="text-base font-bold flex items-center">
-                                            <i class="fa-solid fa-chart-column mr-2" style="color: var(--custom-icon);"></i> Análisis Estadístico en Tiempo Real
+                                            <i class="fa-solid fa-chart-column mr-2" style="color: var(--custom-icon);"></i> Análisis Estadístico
                                         </h3>
                                         <p class="text-xs opacity-75">Consulte comparativas generales por grado o desempeño individual.</p>
                                     </div>
@@ -579,7 +592,6 @@
                                             <option value="grado">📊 Ver por Grado</option>
                                             <option value="estudiante">👤 Ver por Estudiante Específico</option>
                                         </select>
-                                        
                                         <div id="chart-student-select-wrapper" class="hidden">
                                             <select id="chart-student-id" onchange="updateDashboardChart()" class="${t.input} border rounded-xl px-3 py-1.5 text-xs">
                                                 ${STATE.students.filter(s => s.status === 'activo').map(s => `<option value="${s.id}">${s.names} ${s.lastNames} (${s.grade})</option>`).join('')}
@@ -594,7 +606,7 @@
 
                             <div class="${t.card} border rounded-3xl p-4 md:p-6">
                                 <div class="flex items-center justify-between mb-4">
-                                    <h3 class="text-base font-bold">Últimos Registros del Día</h3>
+                                    <h3 class="text-base font-bold">Últimos Registros del Día (En Vivo)</h3>
                                     <span class="text-xs ${t.textMuted}">${todayAttendance.length} marcaciones hoy</span>
                                 </div>
                                 <div class="overflow-x-auto">
@@ -639,7 +651,6 @@
                         </main>
                     </div>
 
-                    <!-- BARRA INFERIOR MÓVIL -->
                     <nav class="border-t px-2 py-2 flex items-center justify-around md:hidden shrink-0 fixed bottom-0 left-0 right-0 z-40 shadow-2xl" style="background-color: var(--custom-sidebar); color: var(--custom-text);">
                         <button onclick="renderScanner()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-qrcode text-base mb-1" style="color: var(--custom-icon);"></i><span>Escanear</span></button>
                         <button onclick="renderManual()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-user-pen text-base mb-1" style="color: var(--custom-icon);"></i><span>Manual</span></button>
@@ -657,11 +668,8 @@
 
         function toggleDashboardChartMode(mode) {
             const wrapper = document.getElementById('chart-student-select-wrapper');
-            if (mode === 'estudiante') {
-                wrapper.classList.remove('hidden');
-            } else {
-                wrapper.classList.add('hidden');
-            }
+            if (mode === 'estudiante') wrapper.classList.remove('hidden');
+            else wrapper.classList.add('hidden');
             updateDashboardChart();
         }
 
@@ -673,9 +681,7 @@
             const textColor = isLight ? '#1e293b' : '#f8fafc';
             const gridColor = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
 
-            if (dashboardChartInstance) {
-                dashboardChartInstance.destroy();
-            }
+            if (dashboardChartInstance) dashboardChartInstance.destroy();
 
             if (mode === 'grado') {
                 const labels = STATE.gradesList;
@@ -1201,7 +1207,6 @@
                                                     ${s.status.toUpperCase()}
                                                 </span>
                                                 <div class="space-x-1">
-                                                    <button onclick="previewIDCard('${s.id}')" class="p-1.5 hover:opacity-75" title="Ver Carné"><i class="fa-solid fa-id-card"></i></button>
                                                     <button onclick="openStudentModal('${s.id}')" class="p-1.5 hover:opacity-75" title="Editar"><i class="fa-solid fa-pen"></i></button>
                                                     <button onclick="deleteStudent('${s.id}')" class="p-1.5 hover:text-[#8B2626]" title="Eliminar"><i class="fa-solid fa-trash"></i></button>
                                                 </div>
@@ -1283,7 +1288,7 @@
         }
 
         async function deleteStudent(id) {
-            if (confirm('¿Eliminar este estudiante?')) {
+            if (confirm('¿Eliminar este estudiante del sistema?')) {
                 STATE.students = STATE.students.filter(s => s.id !== id);
                 await deleteStudentFromCloud(id);
                 showToast('✅ Estudiante eliminado.');
@@ -1302,7 +1307,7 @@
                             <button onclick="document.getElementById('bulk-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
                         </div>
                         <input type="file" id="bulk-file" accept=".xlsx, .xls, .csv" class="w-full text-xs cursor-pointer">
-                        <button onclick="processBulkUpload()" class="w-full text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Procesar</button>
+                        <button onclick="processBulkUpload()" class="w-full text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Procesar y Sincronizar</button>
                     </div>
                 </div>
             `;
@@ -1339,7 +1344,7 @@
                     showToast('✅ Carga masiva sincronizada con la nube.');
                     renderStudents();
                 } catch(err) {
-                    showToast('⚠️ Error al leer archivo: ' + err.message, 'error');
+                    showToast('⚠️ Error al leer el archivo Excel.', 'error');
                 }
             };
             reader.readAsArrayBuffer(fileInput.files[0]);
@@ -1452,7 +1457,7 @@
                                 ${STATE.gradesList.map(g => `<option value="${g}" ${student && student.grade === g ? 'selected' : ''}>${g}</option>`).join('')}
                             </select>
                             <input type="file" accept="image/*" onchange="previewAndCompressPhoto(event)" class="w-full text-xs">
-                            <button type="submit" class="w-full text-white font-semibold py-3 rounded-xl shadow-md" style="background-color: var(--custom-btn);">Guardar</button>
+                            <button type="submit" class="w-full text-white font-semibold py-3 rounded-xl shadow-md" style="background-color: var(--custom-btn);">Guardar en la Nube</button>
                         </form>
                     </div>
                 </div>
@@ -1498,11 +1503,6 @@
             tempPhotoBase64 = '';
             showToast('✅ Estudiante guardado en la nube.');
             renderStudents();
-        }
-
-        function previewIDCard(id) {
-            const s = STATE.students.find(st => st.id === id);
-            openStudentModal(id);
         }
 
         // --- REPORTES ---
@@ -1569,7 +1569,7 @@
 
         function updateNetworkStatus() {
             const badge = document.getElementById('network-badge');
-            if (badge) badge.innerText = STATE.online ? '🟢 Nube Conectada' : '🔴 Offline';
+            if (badge) badge.innerText = STATE.online ? '🟢 Sincronizado' : '🔴 Offline';
         }
     </script>
 </body>
