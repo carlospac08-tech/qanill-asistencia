@@ -1,0 +1,1576 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title id="page-title">Eco School Q'anill – Control de Asistencia</title>
+    <!-- PWA Manifest dinámico -->
+    <link rel="manifest" href="data:application/manifest+json,{
+        &quot;name&quot;: &quot;Eco School Q'anill Asistencia&quot;,
+        &quot;short_name&quot;: &quot;Q'anill Asistencia&quot;,
+        &quot;start_url&quot;: &quot;.&quot;,
+        &quot;display&quot;: &quot;standalone&quot;,
+        &quot;background_color&quot;: &quot;#0f172a&quot;,
+        &quot;theme_color&quot;: &quot;#6c1d1d&quot;
+    }">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS (Excel) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- jsQR para decodificación de códigos QR -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <!-- qrcode-generator para carnés -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <!-- html2canvas para descargar carnés como imagen -->
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <!-- Supabase JS Client -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        textarea { resize: vertical; min-height: 38px; }
+        
+        /* Tamaño exacto de Carné ID Horizontal CR80: 8.56 cm x 5.40 cm */
+        .id-card-horizontal {
+            width: 8.56cm;
+            height: 5.40cm;
+            box-sizing: border-box;
+            background: #ffffff !important;
+            color: #0f172a !important;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 10px;
+            page-break-inside: avoid;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
+        @media print {
+            body {
+                background: #ffffff !important;
+                color: #000000 !important;
+                overflow: visible !important;
+            }
+            body > *:not(#printable-card-area):not(#printable-report) {
+                display: none !important;
+            }
+            #printable-card-area {
+                display: flex !important;
+                flex-wrap: wrap !important;
+                justify-content: center !important;
+                gap: 15px !important;
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                background: #ffffff !important;
+                margin: 0 !important;
+                padding: 10px !important;
+                z-index: 99999 !important;
+            }
+            #printable-card-area * {
+                visibility: visible !important;
+            }
+            #printable-report {
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                background: #ffffff !important;
+                color: #000000 !important;
+                z-index: 99999 !important;
+            }
+            #printable-report * {
+                visibility: visible !important;
+            }
+            @page {
+                size: auto;
+                margin: 10mm;
+            }
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden">
+    <!-- Contenedor de Notificaciones Toast -->
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+    <!-- APP ROOT CONTAINER -->
+    <div id="app" class="flex-1 flex flex-col h-full w-full overflow-hidden relative"></div>
+
+    <!-- SCRIPT PRINCIPAL DE LA APLICACIÓN -->
+    <script>
+        // CONFIGURACIÓN DE SUPABASE (Nube en tiempo real)
+        const SUPABASE_URL = 'https://vejjewvznfnrtlopubs.supabase.co';
+        const SUPABASE_KEY = 'sb_publishable_cs3SLyKIvc4evF6xvcJheg_JqwNT...'; // Tu Publishable key
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // Control de Versión
+        const APP_VERSION = '1.3';
+        if (localStorage.getItem('qanill_version') !== APP_VERSION) {
+            localStorage.setItem('qanill_version', APP_VERSION);
+        }
+
+        // Estado Global de la Aplicación
+        const STATE = {
+            user: null,
+            role: null, 
+            device: localStorage.getItem('qanill_device') || 'Entrada Principal – Dispositivo 1',
+            schoolName: localStorage.getItem('qanill_school_name') || "Eco School Q'anill",
+            logo: localStorage.getItem('qanill_logo') || '',
+            activeCycle: localStorage.getItem('qanill_cycle') || '2026',
+            cycles: ["2026", "2027", "2028", "2029", "2030"],
+            themeMode: localStorage.getItem('qanill_theme') || 'dark', 
+            includeWeekends: localStorage.getItem('qanill_weekends') === 'true',
+            
+            splashBgColor: localStorage.getItem('qanill_splash_bg') || '#6c1d1d',
+            splashTextColor: localStorage.getItem('qanill_splash_text') || '#ffffff',
+
+            colors: JSON.parse(localStorage.getItem('qanill_colors') || JSON.stringify({
+                headerBg: '#6c1d1d',
+                sidebarBg: '#82912d',
+                btnBg: '#EF6905',
+                textColor: '#f8fafc',
+                iconColor: '#EF6905'
+            })),
+
+            gradesList: JSON.parse(localStorage.getItem('qanill_grades_list') || JSON.stringify(['KD', 'PREPA', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'B1', 'B2', 'B3', 'B4 DG', 'B4 MD', 'B4 CM', 'B5 DG', 'B5 MD', 'B5 CM'])),
+
+            gradeSolidColors: JSON.parse(localStorage.getItem('qanill_grade_colors') || JSON.stringify({
+                'KD': '#8B2626', 'PREPA': '#D97706', 'P1': '#486C2F', 'P2': '#1E3A8A', 'P3': '#7C3AED', 'P4': '#0D9488', 'P5': '#BE185D', 'P6': '#C2410C', 'B1': '#15803D', 'B2': '#4338CA', 'B3': '#B45309', 'B4 DG': '#0369A1', 'B4 MD': '#6D28D9', 'B4 CM': '#9333EA', 'B5 DG': '#047857', 'B5 MD': '#B91C1C', 'B5 CM': '#B45309'
+            })),
+
+            sections: JSON.parse(localStorage.getItem('qanill_sections') || '{"KD":["A"], "PREPA":["A"], "P1":["A","B"], "P2":["A","B"], "P3":["A","B"], "P4":["A","B"], "P5":["A","B"], "P6":["A","B"], "B1":["A","B"], "B2":["A","B"], "B3":["A","B"], "B4 DG":["A"], "B4 MD":["A"], "B4 CM":["A"], "B5 DG":["A"], "B5 MD":["A"], "B5 CM":["A"]}'),
+            students: [],
+            attendance: [],
+            excuses: JSON.parse(localStorage.getItem('qanill_excuses') || '{}'),
+            specialSchedules: JSON.parse(localStorage.getItem('qanill_special_schedules') || '{}'),
+            nonWorkingRanges: JSON.parse(localStorage.getItem('qanill_non_working_ranges') || '[]'),
+            online: navigator.onLine
+        };
+
+        let dashboardChartInstance = null;
+
+        function applyCustomColors() {
+            const root = document.documentElement;
+            root.style.setProperty('--custom-header', STATE.colors.headerBg);
+            root.style.setProperty('--custom-sidebar', STATE.colors.sidebarBg);
+            root.style.setProperty('--custom-btn', STATE.colors.btnBg);
+            root.style.setProperty('--custom-text', STATE.colors.textColor);
+            root.style.setProperty('--custom-icon', STATE.colors.iconColor || STATE.colors.btnBg);
+        }
+
+        function getThemeClasses() {
+            applyCustomColors();
+            if (STATE.themeMode === 'light') {
+                return {
+                    body: 'bg-slate-100 text-slate-900',
+                    card: 'bg-white border-slate-300 text-slate-900 shadow-sm',
+                    cardAlt: 'bg-white border-slate-200 text-slate-900 shadow-md',
+                    input: 'bg-slate-50 border-slate-300 text-slate-900',
+                    textMuted: 'text-slate-600',
+                    tableHeader: 'bg-slate-100 text-slate-700 border-slate-300',
+                    tableRow: 'border-slate-200 hover:bg-slate-50'
+                };
+            } else {
+                return {
+                    body: 'bg-slate-900 text-slate-100',
+                    card: 'bg-slate-800/80 border-slate-700/60 text-slate-100 shadow-xl',
+                    cardAlt: 'bg-slate-800 border-slate-700 text-slate-100 shadow-xl',
+                    input: 'bg-slate-900 border-slate-700 text-white',
+                    textMuted: 'text-slate-400',
+                    tableHeader: 'bg-slate-800/80 text-slate-400 border-slate-700',
+                    tableRow: 'border-slate-800 hover:bg-slate-800/30'
+                };
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            if(!container) return;
+            const toast = document.createElement('div');
+            const bgClass = type === 'success' ? 'bg-[#486C2F] text-white' : (type === 'error' ? 'bg-[#8B2626] text-white' : 'bg-[#EF6905] text-white');
+            toast.className = `pointer-events-auto px-4 py-3 rounded-2xl shadow-xl text-sm font-semibold flex items-center space-x-2 transform translate-y-2 opacity-0 transition-all duration-300 ${bgClass}`;
+            toast.innerHTML = `
+                <i class="fa-solid ${type === 'success' ? 'fa-circle-check' : (type === 'error' ? 'fa-triangle-exclamation' : 'fa-circle-info')}"></i>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.remove('translate-y-2', 'opacity-0'); }, 10);
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        window.addEventListener('online', () => { STATE.online = true; updateNetworkStatus(); });
+        window.addEventListener('offline', () => { STATE.online = false; updateNetworkStatus(); });
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            applyCustomColors();
+            initServiceWorker();
+            await loadDataFromCloud();
+            subscribeToRealtimeAttendance();
+            renderSplashWelcome();
+        });
+
+        // --- CARGA Y SINCRONIZACIÓN CON SUPABASE ---
+        async function loadDataFromCloud() {
+            try {
+                const { data: studentsData, error: errSt } = await supabaseClient.from('students').select('*');
+                if (!errSt && studentsData && studentsData.length > 0) {
+                    STATE.students = studentsData.map(s => ({
+                        id: s.id,
+                        names: s.names,
+                        lastNames: s.last_names,
+                        grade: s.grade,
+                        section: s.section || 'A',
+                        jornada: s.jornada || 'Matutina',
+                        status: s.status || 'activo',
+                        photo: s.photo || ''
+                    }));
+                } else if (STATE.students.length === 0) {
+                    STATE.students = [
+                        { id: 'QAN-2026-1001', names: 'Carlos Eduardo', lastNames: 'López Gómez', grade: 'B5 DG', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' },
+                        { id: 'QAN-2026-1002', names: 'María Fernanda', lastNames: 'Morales Ruiz', grade: 'B5 DG', section: 'A', jornada: 'Matutina', status: 'activo', photo: '' }
+                    ];
+                }
+
+                const today = new Date().toISOString().split('T')[0];
+                const { data: attendanceData, error: errAtt } = await supabaseClient.from('attendance').select('*').eq('date', today);
+                if (!errAtt && attendanceData) {
+                    STATE.attendance = attendanceData.map(a => ({
+                        id: a.student_id,
+                        date: a.date,
+                        time: a.time,
+                        status: a.status,
+                        type: a.type,
+                        device: a.device,
+                        user: a.user_role,
+                        cycle: a.cycle
+                    }));
+                }
+            } catch (e) {
+                console.error('Error conectando a Supabase:', e);
+            }
+        }
+
+        function subscribeToRealtimeAttendance() {
+            try {
+                supabaseClient
+                    .channel('schema-db-changes')
+                    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, payload => {
+                        const newRecord = payload.new;
+                        const today = new Date().toISOString().split('T')[0];
+                        if (newRecord.date === today) {
+                            const exists = STATE.attendance.some(a => a.id === newRecord.student_id && a.date === newRecord.date && a.cycle === newRecord.cycle);
+                            if (!exists) {
+                                STATE.attendance.push({
+                                    id: newRecord.student_id,
+                                    date: newRecord.date,
+                                    time: newRecord.time,
+                                    status: newRecord.status,
+                                    type: newRecord.type,
+                                    device: newRecord.device,
+                                    user: newRecord.user_role,
+                                    cycle: newRecord.cycle
+                                });
+                                playSound('success');
+                                showToast(`🔔 Nueva marcación desde ${newRecord.device}`);
+                                if (document.getElementById('dashboard-chart-canvas')) {
+                                    renderDashboard();
+                                }
+                            }
+                        }
+                    })
+                    .subscribe();
+            } catch(e) {}
+        }
+
+        async function saveAttendanceRecordToCloud(record) {
+            try {
+                await supabaseClient.from('attendance').insert([{
+                    student_id: record.id,
+                    date: record.date,
+                    time: record.time,
+                    status: record.status,
+                    type: record.type,
+                    device: record.device,
+                    user_role: record.user,
+                    cycle: record.cycle
+                }]);
+            } catch(e) {
+                console.error('Error al guardar en nube:', e);
+            }
+        }
+
+        async function saveStudentToCloud(student) {
+            try {
+                await supabaseClient.from('students').upsert([{
+                    id: student.id,
+                    names: student.names,
+                    last_names: student.lastNames,
+                    grade: student.grade,
+                    section: student.section,
+                    jornada: student.jornada,
+                    status: student.status,
+                    photo: student.photo
+                }]);
+            } catch(e) {
+                console.error('Error al guardar estudiante en nube:', e);
+            }
+        }
+
+        async function deleteStudentFromCloud(id) {
+            try {
+                await supabaseClient.from('students').delete().eq('id', id);
+            } catch(e) {}
+        }
+
+        async function deleteAttendanceFromCloud(studentId, date) {
+            try {
+                await supabaseClient.from('attendance').delete().eq('student_id', studentId).eq('date', date);
+            } catch(e) {}
+        }
+
+        function initServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                const swCode = `
+                    self.addEventListener('install', e => e.waitUntil(self.skipWaiting()));
+                    self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+                    self.addEventListener('fetch', e => e.respondWith(fetch(e.request).catch(() => caches.match(e.request))));
+                `;
+                const blob = new Blob([swCode], { type: 'text/javascript' });
+                navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
+            }
+        }
+
+        function playSound(type) {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                if (type === 'success') {
+                    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.1);
+                    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.3);
+                } else {
+                    osc.frequency.setValueAtTime(220, ctx.currentTime);
+                    osc.frequency.setValueAtTime(150, ctx.currentTime + 0.15);
+                    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.4);
+                }
+            } catch(e) {}
+        }
+
+        // --- SPLASH SCREEN ---
+        function renderSplashWelcome() {
+            const app = document.getElementById('app');
+            document.body.className = `h-full flex flex-col overflow-hidden bg-slate-950`;
+            app.innerHTML = `
+                <div class="absolute inset-0 flex flex-col items-center justify-center p-6 z-50 text-center transition-colors duration-500" style="background-color: ${STATE.splashBgColor}; color: ${STATE.splashTextColor};">
+                    <div class="w-24 h-24 rounded-3xl flex items-center justify-center shadow-2xl mb-6 animate-bounce bg-white/10 backdrop-blur-md border border-white/20 overflow-hidden">
+                        ${STATE.logo ? `<img src="${STATE.logo}" class="w-full h-full object-cover">` : `<i class="fa-solid fa-graduation-cap text-5xl" style="color: ${STATE.splashTextColor};"></i>`}
+                    </div>
+                    <h1 class="text-3xl md:text-4xl font-extrabold tracking-wide drop-shadow-md">${STATE.schoolName}</h1>
+                    <p class="text-sm md:text-base mt-2 font-medium tracking-wide opacity-90">Sistema Inteligente en la Nube</p>
+                    
+                    <div class="mt-8 w-48 bg-black/30 h-2 rounded-full overflow-hidden mx-auto border border-white/20">
+                        <div id="loading-bar" class="h-full w-0 transition-all duration-1000 rounded-full" style="background-color: var(--custom-btn, #EF6905);"></div>
+                    </div>
+                    <p class="text-xs mt-3 animate-pulse opacity-80">Sincronizando base de datos...</p>
+
+                    <div class="absolute bottom-6 text-xs opacity-75">
+                        Ciclo Escolar Activo: <span class="font-bold">${STATE.activeCycle}</span>
+                    </div>
+                </div>
+            `;
+
+            setTimeout(() => {
+                const bar = document.getElementById('loading-bar');
+                if (bar) bar.style.width = '100%';
+            }, 100);
+
+            setTimeout(() => {
+                renderLogin();
+            }, 2200);
+        }
+
+        // --- AUTENTICACIÓN ---
+        function renderLogin() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            document.body.className = `h-full flex flex-col overflow-hidden ${t.body}`;
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col items-center justify-center p-6" style="background-color: var(--custom-sidebar); opacity: 0.15;"></div>
+                <div class="absolute inset-0 flex flex-col items-center justify-center p-6 pointer-events-none">
+                    <div class="w-full max-w-md ${t.card} border rounded-3xl p-8 shadow-2xl pointer-events-auto" style="color: var(--custom-text);">
+                        <div class="text-center mb-8">
+                            ${STATE.logo ? `<img src="${STATE.logo}" class="w-16 h-16 object-cover rounded-2xl mx-auto mb-4 shadow-lg">` : `
+                            <div class="w-16 h-16 rounded-2xl mx-auto flex items-center justify-center text-3xl shadow-lg mb-4 text-white" style="background-color: var(--custom-sidebar);">
+                                <i class="fa-solid fa-leaf" style="color: var(--custom-icon);"></i>
+                            </div>`}
+                            <h2 class="text-2xl font-bold">${STATE.schoolName}</h2>
+                            <p class="text-xs mt-1 uppercase tracking-wider font-semibold" style="color: var(--custom-btn);">Seleccione su rol de acceso</p>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Rol de Usuario</label>
+                                <select id="login-role" class="w-full ${t.input} border rounded-xl px-4 py-3 text-sm focus:outline-none">
+                                    <option value="admin">Administrador (Acceso total)</option>
+                                    <option value="personal">Personal de control (Asistencia y reportes)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium mb-1">Nombre de Terminal / Dispositivo</label>
+                                <input type="text" id="login-device" value="${STATE.device}" class="w-full ${t.input} border rounded-xl px-4 py-3 text-sm focus:outline-none">
+                            </div>
+                            <button onclick="handleLogin()" class="w-full text-white font-semibold py-3.5 rounded-xl shadow-lg transition-all duration-200 mt-2" style="background-color: var(--custom-btn);">
+                                Iniciar Sesión
+                            </button>
+                        </div>
+                        <div class="mt-6 text-center text-xs opacity-75">
+                            <button onclick="renderSplashWelcome()" class="underline text-xs">Volver a portada</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleLogin() {
+            const role = document.getElementById('login-role').value;
+            const device = document.getElementById('login-device').value.trim();
+            if (device) {
+                STATE.device = device;
+                localStorage.setItem('qanill_device', device);
+            }
+            STATE.role = role;
+            STATE.user = role === 'admin' ? 'Administrador' : 'Personal de Control';
+            renderDashboard();
+        }
+
+        function toggleThemeMode() {
+            STATE.themeMode = STATE.themeMode === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('qanill_theme', STATE.themeMode);
+            renderDashboard();
+        }
+
+        // --- DASHBOARD PRINCIPAL ---
+        function renderDashboard() {
+            const t = getThemeClasses();
+            document.body.className = `h-full flex flex-col overflow-hidden ${t.body}`;
+            const today = new Date().toISOString().split('T')[0];
+            const todayAttendance = STATE.attendance.filter(a => a.date === today && a.cycle === STATE.activeCycle);
+            const totalStudents = STATE.students.filter(s => s.status === 'activo').length;
+            const attended = todayAttendance.length;
+            const punctual = todayAttendance.filter(a => a.status === 'puntual').length;
+            const late = todayAttendance.filter(a => a.status === 'tarde').length;
+            const absent = Math.max(0, totalStudents - attended);
+            const percentage = totalStudents > 0 ? ((attended / totalStudents) * 100).toFixed(1) : 0;
+
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            ${STATE.logo ? `<img src="${STATE.logo}" class="w-10 h-10 object-cover rounded-xl">` : `
+                            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold" style="background-color: var(--custom-btn);">
+                                <i class="fa-solid fa-leaf" style="color: var(--custom-icon);"></i>
+                            </div>`}
+                            <div>
+                                <h1 class="text-sm md:text-base font-bold">${STATE.schoolName}</h1>
+                                <p class="text-[11px] md:text-xs opacity-90">${STATE.device} • <span id="network-badge">${STATE.online ? '🟢 Nube Conectada' : '🔴 Offline'}</span></p>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div class="flex items-center bg-black/30 px-3 py-1.5 rounded-full space-x-2">
+                                <span class="text-[10px] font-bold">☀️/🌙</span>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" id="theme-switch" onchange="toggleThemeMode()" class="sr-only peer" ${STATE.themeMode === 'light' ? 'checked' : ''}>
+                                    <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all"></div>
+                                </label>
+                            </div>
+                            <span class="text-xs bg-black/20 px-3 py-1.5 rounded-lg font-medium hidden sm:inline">Ciclo: ${STATE.activeCycle}</span>
+                            <button onclick="renderLogin()" class="bg-black/30 hover:bg-black/50 text-xs px-3 py-2 rounded-lg font-medium transition">
+                                <i class="fa-solid fa-right-from-bracket mr-1"></i> Salir
+                            </button>
+                        </div>
+                    </header>
+
+                    <div class="flex-1 flex overflow-hidden">
+                        <aside class="w-64 border-r flex flex-col p-4 space-y-2 shrink-0 hidden md:flex shadow-lg" style="background-color: var(--custom-sidebar); color: var(--custom-text);">
+                            <button onclick="renderScanner()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-qrcode w-5" style="color: var(--custom-icon);"></i><span>Escanear Carné</span>
+                            </button>
+                            <button onclick="renderManual()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-user-pen w-5" style="color: var(--custom-icon);"></i><span>Registro Manual</span>
+                            </button>
+                            <button onclick="renderDashboard()" class="w-full text-left px-4 py-3 rounded-xl bg-black/30 font-bold text-sm flex items-center space-x-3 shadow-md">
+                                <i class="fa-solid fa-chart-pie w-5" style="color: var(--custom-icon);"></i><span>Dashboard</span>
+                            </button>
+                            <button onclick="renderStudents()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-users w-5" style="color: var(--custom-icon);"></i><span>Estudiantes y Carnés</span>
+                            </button>
+                            <button onclick="renderReports()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-file-excel w-5" style="color: var(--custom-icon);"></i><span>Reportes & Ausencias</span>
+                            </button>
+                            ${STATE.role === 'admin' ? `
+                            <button onclick="renderSettings()" class="w-full text-left px-4 py-3 rounded-xl hover:bg-black/20 text-sm font-medium flex items-center space-x-3 transition">
+                                <i class="fa-solid fa-gear w-5" style="color: var(--custom-icon);"></i><span>Configuración</span>
+                            </button>` : ''}
+                        </aside>
+
+                        <main class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 pb-24 md:pb-6">
+                            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Inscritos</p>
+                                    <h3 class="text-2xl font-bold mt-1">${totalStudents}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Asistieron</p>
+                                    <h3 class="text-2xl font-bold text-[#486C2F] mt-1">${attended}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Puntuales</p>
+                                    <h3 class="text-2xl font-bold text-[#486C2F] mt-1">${punctual}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Tarde</p>
+                                    <h3 class="text-2xl font-bold mt-1" style="color: var(--custom-btn);">${late}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">Ausentes</p>
+                                    <h3 class="text-2xl font-bold text-[#8B2626] mt-1">${absent}</h3>
+                                </div>
+                                <div class="${t.card} border p-4 rounded-2xl">
+                                    <p class="text-xs ${t.textMuted} font-medium">% Asistencia</p>
+                                    <h3 class="text-2xl font-bold text-[#486C2F] mt-1">${percentage}%</h3>
+                                </div>
+                            </div>
+
+                            <div class="${t.card} border rounded-3xl p-4 md:p-6 space-y-4 shadow-xl">
+                                <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-700/40 pb-4">
+                                    <div>
+                                        <h3 class="text-base font-bold flex items-center">
+                                            <i class="fa-solid fa-chart-column mr-2" style="color: var(--custom-icon);"></i> Análisis Estadístico en Tiempo Real
+                                        </h3>
+                                        <p class="text-xs opacity-75">Consulte comparativas generales por grado o desempeño individual.</p>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <select id="chart-mode" onchange="toggleDashboardChartMode(this.value)" class="${t.input} border rounded-xl px-3 py-1.5 text-xs font-semibold">
+                                            <option value="grado">📊 Ver por Grado</option>
+                                            <option value="estudiante">👤 Ver por Estudiante Específico</option>
+                                        </select>
+                                        
+                                        <div id="chart-student-select-wrapper" class="hidden">
+                                            <select id="chart-student-id" onchange="updateDashboardChart()" class="${t.input} border rounded-xl px-3 py-1.5 text-xs">
+                                                ${STATE.students.filter(s => s.status === 'activo').map(s => `<option value="${s.id}">${s.names} ${s.lastNames} (${s.grade})</option>`).join('')}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="relative w-full h-72 md:h-80">
+                                    <canvas id="dashboard-chart-canvas"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="${t.card} border rounded-3xl p-4 md:p-6">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h3 class="text-base font-bold">Últimos Registros del Día</h3>
+                                    <span class="text-xs ${t.textMuted}">${todayAttendance.length} marcaciones hoy</span>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-left text-sm">
+                                        <thead>
+                                            <tr class="border-b ${t.tableHeader} text-xs uppercase">
+                                                <th class="pb-3">Estudiante</th>
+                                                <th class="pb-3">Grado/Sec</th>
+                                                <th class="pb-3">Hora</th>
+                                                <th class="pb-3">Estado</th>
+                                                <th class="pb-3">Tipo</th>
+                                                <th class="pb-3">Terminal</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y ${t.tableRow}">
+                                            ${todayAttendance.slice(-10).reverse().map(a => {
+                                                const st = STATE.students.find(s => s.id === a.id) || { names: 'Desconocido', lastNames: '', grade: '-', section: '-' };
+                                                return `
+                                                    <tr>
+                                                        <td class="py-3 font-medium flex items-center space-x-3">
+                                                            <div class="w-8 h-8 rounded-full bg-[#8B2626]/20 text-[#8B2626] flex items-center justify-center font-bold text-xs overflow-hidden">
+                                                                ${st.photo ? `<img src="${st.photo}" class="w-full h-full object-cover">` : st.names[0]}
+                                                            </div>
+                                                            <span>${st.names} ${st.lastNames}</span>
+                                                        </td>
+                                                        <td class="py-3">${st.grade} "${st.section}"</td>
+                                                        <td class="py-3">${a.time}</td>
+                                                        <td class="py-3">
+                                                            <span class="px-2.5 py-1 rounded-full text-xs font-semibold ${a.status === 'puntual' ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-[#EF6905]/20 text-[#EF6905]'}">
+                                                                ${a.status.toUpperCase()}
+                                                            </span>
+                                                        </td>
+                                                        <td class="py-3 capitalize">${a.type}</td>
+                                                        <td class="py-3 text-xs opacity-75">${a.device}</td>
+                                                    </tr>
+                                                `;
+                                            }).join('') || `<tr><td colspan="6" class="py-6 text-center opacity-60">No hay registros de asistencia en la jornada de hoy.</td></tr>`}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </main>
+                    </div>
+
+                    <!-- BARRA INFERIOR MÓVIL -->
+                    <nav class="border-t px-2 py-2 flex items-center justify-around md:hidden shrink-0 fixed bottom-0 left-0 right-0 z-40 shadow-2xl" style="background-color: var(--custom-sidebar); color: var(--custom-text);">
+                        <button onclick="renderScanner()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-qrcode text-base mb-1" style="color: var(--custom-icon);"></i><span>Escanear</span></button>
+                        <button onclick="renderManual()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-user-pen text-base mb-1" style="color: var(--custom-icon);"></i><span>Manual</span></button>
+                        <button onclick="renderDashboard()" class="flex flex-col items-center text-[10px] font-bold py-1" style="color: var(--custom-btn);"><i class="fa-solid fa-chart-pie text-base mb-1" style="color: var(--custom-icon);"></i><span>Dash</span></button>
+                        <button onclick="renderStudents()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-users text-base mb-1" style="color: var(--custom-icon);"></i><span>Alumnos</span></button>
+                        <button onclick="renderReports()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-file-excel text-base mb-1" style="color: var(--custom-icon);"></i><span>Reportes</span></button>
+                        ${STATE.role === 'admin' ? `
+                        <button onclick="renderSettings()" class="flex flex-col items-center text-[10px] font-medium opacity-90 hover:opacity-100 py-1"><i class="fa-solid fa-gear text-base mb-1" style="color: var(--custom-icon);"></i><span>Config</span></button>` : ''}
+                    </nav>
+                </div>
+            `;
+
+            setTimeout(() => { updateDashboardChart(); }, 100);
+        }
+
+        function toggleDashboardChartMode(mode) {
+            const wrapper = document.getElementById('chart-student-select-wrapper');
+            if (mode === 'estudiante') {
+                wrapper.classList.remove('hidden');
+            } else {
+                wrapper.classList.add('hidden');
+            }
+            updateDashboardChart();
+        }
+
+        function updateDashboardChart() {
+            const ctx = document.getElementById('dashboard-chart-canvas');
+            if (!ctx) return;
+            const mode = document.getElementById('chart-mode')?.value || 'grado';
+            const isLight = STATE.themeMode === 'light';
+            const textColor = isLight ? '#1e293b' : '#f8fafc';
+            const gridColor = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+
+            if (dashboardChartInstance) {
+                dashboardChartInstance.destroy();
+            }
+
+            if (mode === 'grado') {
+                const labels = STATE.gradesList;
+                const puntualesData = [];
+                const tardesData = [];
+                const ausentesData = [];
+                const today = new Date().toISOString().split('T')[0];
+
+                labels.forEach(g => {
+                    const gradeStudents = STATE.students.filter(s => s.grade === g && s.status === 'activo');
+                    let p = 0, t = 0, a = 0;
+
+                    gradeStudents.forEach(st => {
+                        const rec = STATE.attendance.find(att => att.id === st.id && att.date === today && att.cycle === STATE.activeCycle);
+                        if (rec) {
+                            if (rec.status === 'puntual') p++;
+                            else if (rec.status === 'tarde') t++;
+                        } else {
+                            a++;
+                        }
+                    });
+
+                    puntualesData.push(p);
+                    tardesData.push(t);
+                    ausentesData.push(a);
+                });
+
+                dashboardChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            { label: 'Puntuales', data: puntualesData, backgroundColor: '#486C2F', borderRadius: 6 },
+                            { label: 'Tarde', data: tardesData, backgroundColor: STATE.colors.btnBg, borderRadius: 6 },
+                            { label: 'Ausentes', data: ausentesData, backgroundColor: '#8B2626', borderRadius: 6 }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: textColor, font: { family: 'Plus Jakarta Sans', weight: 'bold' } } }
+                        },
+                        scales: {
+                            x: { ticks: { color: textColor }, grid: { color: gridColor } },
+                            y: { ticks: { color: textColor, stepSize: 1 }, grid: { color: gridColor }, beginAtZero: true }
+                        }
+                    }
+                });
+            } else {
+                const studentId = document.getElementById('chart-student-id')?.value || STATE.students[0]?.id;
+                const student = STATE.students.find(s => s.id === studentId);
+                let pCount = 0, tCount = 0;
+                const studentRecords = STATE.attendance.filter(a => a.id === studentId && a.cycle === STATE.activeCycle);
+                
+                studentRecords.forEach(r => {
+                    if (r.status === 'puntual') pCount++;
+                    else if (r.status === 'tarde') tCount++;
+                });
+
+                dashboardChartInstance = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Asistencias Puntuales', 'Llegadas Tarde'],
+                        datasets: [{
+                            data: [pCount, tCount],
+                            backgroundColor: ['#486C2F', STATE.colors.btnBg],
+                            borderWidth: 2,
+                            borderColor: isLight ? '#ffffff' : '#1e293b'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: textColor, font: { family: 'Plus Jakarta Sans', weight: 'bold' } } },
+                            title: { display: true, text: `Historial de ${student ? student.names + ' ' + student.lastNames : 'Estudiante'}`, color: textColor }
+                        }
+                    }
+                });
+            }
+        }
+
+        // --- ESCANEO QR ---
+        let scannerActive = false;
+        let videoStream = null;
+        let lastScannedCode = '';
+        let lastScanTime = 0;
+
+        function renderScanner() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="stopCamera(); renderDashboard();" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Registrar Asistencia por Escáner</h1>
+                        </div>
+                        <span class="text-xs bg-[#486C2F]/20 text-[#F1E5A1] px-3 py-1 rounded-full font-semibold">Límite Hoy: ${getEffectiveTimeLimit(new Date().toISOString().split('T')[0])} AM</span>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto flex flex-col items-center justify-center max-w-xl mx-auto w-full pb-24 md:pb-6">
+                        <div class="w-full ${t.card} border rounded-3xl p-6 shadow-xl text-center">
+                            <div id="scanner-container" class="relative w-full h-64 bg-black rounded-2xl overflow-hidden mb-6 flex items-center justify-center border border-slate-700">
+                                <video id="qr-video" class="w-full h-full object-cover" autoplay playsinline></video>
+                                <div id="scanner-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-4">
+                                    <i class="fa-solid fa-camera text-4xl mb-2 animate-pulse" style="color: var(--custom-icon);"></i>
+                                    <p class="text-sm">Cámara inactiva. Presione activar para iniciar el escaneo QR.</p>
+                                </div>
+                            </div>
+                            <div class="flex space-x-3 mb-6">
+                                <button onclick="startCamera()" class="flex-1 text-white font-semibold py-3 rounded-xl shadow-md transition" style="background-color: var(--custom-btn);">
+                                    <i class="fa-solid fa-play mr-2"></i> Activar Cámara
+                                </button>
+                                <button onclick="stopCamera()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 rounded-xl shadow-md transition">
+                                    <i class="fa-solid fa-stop mr-2"></i> Apagar
+                                </button>
+                            </div>
+                            <div class="border-t border-slate-700/50 pt-4">
+                                <label class="block text-xs font-medium ${t.textMuted} mb-2">Simulador de Código de Carné:</label>
+                                <div class="flex space-x-2">
+                                    <input type="text" id="sim-code" placeholder="Ej. QAN-2026-1001" class="flex-1 ${t.input} border rounded-xl px-4 py-2.5 text-sm focus:outline-none">
+                                    <button onclick="processScanCode(document.getElementById('sim-code').value)" class="text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition" style="background-color: var(--custom-btn);">
+                                        Simular
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function startCamera() {
+            if (scannerActive) return;
+            const video = document.getElementById('qr-video');
+            const placeholder = document.getElementById('scanner-placeholder');
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+                .then(stream => {
+                    videoStream = stream;
+                    video.srcObject = stream;
+                    video.setAttribute('playsinline', true);
+                    video.play();
+                    scannerActive = true;
+                    if (placeholder) placeholder.style.display = 'none';
+                    requestAnimationFrame(tickScanner);
+                })
+                .catch(err => showToast('No se pudo acceder a la cámara: ' + err.message, 'error'));
+        }
+
+        function stopCamera() {
+            scannerActive = false;
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            const placeholder = document.getElementById('scanner-placeholder');
+            if (placeholder) placeholder.style.display = 'flex';
+        }
+
+        function tickScanner() {
+            if (!scannerActive) return;
+            const video = document.getElementById('qr-video');
+            if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code) {
+                    const nowTime = Date.now();
+                    if (code.data !== lastScannedCode || (nowTime - lastScanTime > 3000)) {
+                        lastScannedCode = code.data;
+                        lastScanTime = nowTime;
+                        processScanCode(code.data);
+                    }
+                    scannerActive = false;
+                    setTimeout(() => {
+                        if (videoStream) scannerActive = true;
+                        requestAnimationFrame(tickScanner);
+                    }, 1500);
+                    return;
+                }
+            }
+            if (scannerActive) requestAnimationFrame(tickScanner);
+        }
+
+        function isNonWorkingDate(dateStr) {
+            const ranges = STATE.nonWorkingRanges || [];
+            const d = new Date(dateStr);
+            if (!STATE.includeWeekends) {
+                const dayOfWeek = d.getDay();
+                if (dayOfWeek === 0 || dayOfWeek === 6) return true;
+            }
+            for (let r of ranges) {
+                const start = new Date(r.start);
+                const end = new Date(r.end);
+                if (d >= start && d <= end) return true;
+            }
+            return false;
+        }
+
+        function getEffectiveTimeLimit(dateStr) {
+            if (STATE.specialSchedules && STATE.specialSchedules[dateStr]) {
+                return STATE.specialSchedules[dateStr];
+            }
+            return STATE.timeLimit || '07:10';
+        }
+
+        async function processScanCode(code) {
+            code = code.trim();
+            const today = new Date().toISOString().split('T')[0];
+            const d = new Date(today);
+
+            if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) {
+                playSound('error');
+                showToast('⚠️ Fin de semana (asistencias desactivadas).', 'warning');
+                return;
+            }
+
+            if (isNonWorkingDate(today)) {
+                playSound('error');
+                showToast('⚠️ Período de asueto configurado.', 'warning');
+                return;
+            }
+
+            const student = STATE.students.find(s => s.id === code && s.status === 'activo');
+            if (!student) {
+                playSound('error');
+                showToast('⚠️ Estudiante no encontrado o inactivo: ' + code, 'error');
+                return;
+            }
+
+            const already = STATE.attendance.find(a => a.id === student.id && a.date === today && a.cycle === STATE.activeCycle);
+            if (already) {
+                playSound('error');
+                showToast(`⚠️ ${student.names} ya registró asistencia hoy a las ${already.time}.`, 'warning');
+                return;
+            }
+
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            const [h, m] = timeStr.split(':').map(Number);
+            
+            const effectiveLimit = getEffectiveTimeLimit(today);
+            const [limitH, limitM] = effectiveLimit.split(':').map(Number);
+            const status = (h * 60 + m) <= (limitH * 60 + limitM) ? 'puntual' : 'tarde';
+
+            const record = {
+                id: student.id,
+                date: today,
+                time: timeStr,
+                status: status,
+                type: 'escaneo',
+                device: STATE.device,
+                user: STATE.user,
+                cycle: STATE.activeCycle
+            };
+
+            STATE.attendance.push(record);
+            await saveAttendanceRecordToCloud(record);
+            playSound('success');
+
+            showSuccessModal(student, record);
+        }
+
+        function showSuccessModal(student, record) {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="scan-success-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-md w-full text-center shadow-2xl">
+                        <div class="w-16 h-16 rounded-full bg-[#486C2F]/25 text-[#486C2F] flex items-center justify-center mx-auto mb-4 text-3xl">
+                            <i class="fa-solid fa-check"></i>
+                        </div>
+                        <h3 class="text-xl font-bold mb-1">¡Asistencia Registrada!</h3>
+                        <p class="text-xs ${t.textMuted} mb-6">Sincronizado con la nube.</p>
+                        
+                        <div class="bg-black/20 rounded-2xl p-4 mb-6 flex items-center space-x-4 text-left">
+                            <div class="w-16 h-16 rounded-xl bg-slate-700 overflow-hidden shrink-0">
+                                ${student.photo ? `<img src="${student.photo}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center font-bold text-lg">${student.names[0]}</div>`}
+                            </div>
+                            <div>
+                                <h4 class="font-bold text-sm">${student.names} ${student.lastNames}</h4>
+                                <p class="text-xs opacity-75">Código: ${student.id}</p>
+                                <p class="text-xs text-[#486C2F] font-semibold mt-1">Grado: ${student.grade} "${student.section}" • ${record.time}</p>
+                                <span class="inline-block mt-2 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${record.status === 'puntual' ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-[#EF6905]/20 text-[#EF6905]'}">
+                                    ${record.status.toUpperCase()}
+                                </span>
+                            </div>
+                        </div>
+                        <button onclick="document.getElementById('scan-success-modal').remove()" class="w-full text-white font-semibold py-3 rounded-xl shadow-md transition" style="background-color: var(--custom-btn);">
+                            Continuar Escaneando
+                        </button>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+            setTimeout(() => {
+                const m = document.getElementById('scan-success-modal');
+                if (m) m.remove();
+            }, 2000);
+        }
+
+        // --- REGISTRO MANUAL ---
+        function renderManual() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const today = new Date().toISOString().split('T')[0];
+            const todayAttendance = STATE.attendance.filter(a => a.date === today && a.cycle === STATE.activeCycle);
+
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Registro Manual de Asistencia</h1>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto max-w-3xl mx-auto w-full space-y-6 pb-24 md:pb-6">
+                        <div class="${t.card} border p-4 md:p-6 rounded-3xl space-y-4">
+                            <h3 class="text-sm font-bold uppercase tracking-wider" style="color: var(--custom-btn);">Registrar Ingreso de Alumno</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Filtrar por Grado</label>
+                                    <select id="manual-grade-filter" onchange="filterManualStudents()" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm focus:outline-none">
+                                        <option value="">Todos los Grados</option>
+                                        ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium mb-1">Buscar por Nombre o Código</label>
+                                    <input type="text" id="manual-search" oninput="filterManualStudents()" placeholder="Escriba para buscar..." class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm focus:outline-none">
+                                </div>
+                            </div>
+                            
+                            <div id="manual-results" class="space-y-2 max-h-64 overflow-y-auto mt-4">
+                                ${renderManualStudentList(STATE.students.filter(s => s.status === 'activo'))}
+                            </div>
+                        </div>
+
+                        <div class="${t.card} border p-4 md:p-6 rounded-3xl space-y-4">
+                            <h3 class="text-sm font-bold uppercase tracking-wider" style="color: var(--custom-btn);"><i class="fa-solid fa-clock-rotate-left mr-1.5" style="color: var(--custom-icon);"></i> Eliminar Registro Erróneo del Día (${today})</h3>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left text-sm">
+                                    <thead>
+                                        <tr class="border-b ${t.tableHeader} text-xs uppercase">
+                                            <th class="p-2.5">Estudiante</th>
+                                            <th class="p-2.5">Grado</th>
+                                            <th class="p-2.5">Hora</th>
+                                            <th class="p-2.5">Acción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y ${t.tableRow}">
+                                        ${todayAttendance.map(a => {
+                                            const st = STATE.students.find(s => s.id === a.id) || { names: 'Desconocido', lastNames: '', grade: '-' };
+                                            return `
+                                                <tr>
+                                                    <td class="p-2.5 font-medium">${st.names} ${st.lastNames} (${st.id})</td>
+                                                    <td class="p-2.5">${st.grade} "${st.section || 'A'}"</td>
+                                                    <td class="p-2.5">${a.time}</td>
+                                                    <td class="p-2.5">
+                                                        <button onclick="deleteAttendanceRecord('${a.id}', '${today}')" class="bg-[#8B2626] hover:bg-[#721f1f] text-white text-xs px-3 py-1.5 rounded-xl transition flex items-center space-x-1">
+                                                            <i class="fa-solid fa-trash"></i> <span>Eliminar</span>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('') || `<tr><td colspan="4" class="p-4 text-center opacity-60 text-xs">No hay registros hoy.</td></tr>`}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        async function deleteAttendanceRecord(studentId, date) {
+            if (confirm('¿Está seguro de eliminar esta marcación?')) {
+                STATE.attendance = STATE.attendance.filter(a => !(a.id === studentId && a.date === date && a.cycle === STATE.activeCycle));
+                await deleteAttendanceFromCloud(studentId, date);
+                showToast('✅ Registro eliminado correctamente.');
+                renderManual();
+            }
+        }
+
+        function filterManualStudents() {
+            const query = document.getElementById('manual-search').value.toLowerCase();
+            const gradeFilter = document.getElementById('manual-grade-filter').value;
+            const filtered = STATE.students.filter(s => {
+                const matchStatus = s.status === 'activo';
+                const matchGrade = gradeFilter ? s.grade === gradeFilter : true;
+                const matchQuery = s.names.toLowerCase().includes(query) ||
+                    s.lastNames.toLowerCase().includes(query) ||
+                    s.id.toLowerCase().includes(query);
+                return matchStatus && matchGrade && matchQuery;
+            });
+            document.getElementById('manual-results').innerHTML = renderManualStudentList(filtered);
+        }
+
+        function renderManualStudentList(list) {
+            const t = getThemeClasses();
+            if (list.length === 0) return `<p class="text-center opacity-60 py-4">No se encontraron estudiantes.</p>`;
+            return list.map(s => `
+                <div class="${t.cardAlt} border p-3 rounded-2xl flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 rounded-xl bg-[#8B2626]/20 text-[#8B2626] overflow-hidden shrink-0 flex items-center justify-center font-bold">
+                            ${s.photo ? `<img src="${s.photo}" class="w-full h-full object-cover">` : s.names[0]}
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-sm">${s.names} ${s.lastNames}</h4>
+                            <p class="text-xs opacity-75">Código: ${s.id} • Grado: ${s.grade} "${s.section}"</p>
+                        </div>
+                    </div>
+                    <button onclick="processManualRecord('${s.id}')" class="text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition" style="background-color: var(--custom-btn);">
+                        Registrar
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function processManualRecord(id) {
+            const today = new Date().toISOString().split('T')[0];
+            const d = new Date(today);
+
+            if (!STATE.includeWeekends && (d.getDay() === 0 || d.getDay() === 6)) {
+                showToast('⚠️ Fin de semana (asistencias desactivadas).', 'warning');
+                return;
+            }
+
+            if (isNonWorkingDate(today)) {
+                showToast('⚠️ Período no laborable configurado.', 'warning');
+                return;
+            }
+
+            const student = STATE.students.find(s => s.id === id);
+            const already = STATE.attendance.find(a => a.id === student.id && a.date === today && a.cycle === STATE.activeCycle);
+            if (already) {
+                showToast(`⚠️ El estudiante ya tiene registrada su asistencia hoy a las ${already.time}.`, 'warning');
+                return;
+            }
+
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            const [h, m] = timeStr.split(':').map(Number);
+            
+            const effectiveLimit = getEffectiveTimeLimit(today);
+            const [limitH, limitM] = effectiveLimit.split(':').map(Number);
+            const status = (h * 60 + m) <= (limitH * 60 + limitM) ? 'puntual' : 'tarde';
+
+            const record = {
+                id: student.id,
+                date: today,
+                time: timeStr,
+                status: status,
+                type: 'manual',
+                device: STATE.device,
+                user: STATE.user,
+                cycle: STATE.activeCycle
+            };
+
+            STATE.attendance.push(record);
+            await saveAttendanceRecordToCloud(record);
+            playSound('success');
+            
+            showToast(`✅ Asistencia manual registrada para ${student.names} (${status.toUpperCase()})`);
+            renderManual();
+        }
+
+        // --- ESTUDIANTES ---
+        let selectedGradeForCardView = null;
+        let selectedStudentIdsForDelete = new Set();
+
+        function renderStudents() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            
+            if (selectedGradeForCardView) {
+                const gradeStudents = STATE.students.filter(s => s.grade === selectedGradeForCardView);
+                app.innerHTML = `
+                    <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                        <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                            <div class="flex items-center space-x-3">
+                                <button onclick="selectedGradeForCardView = null; selectedStudentIdsForDelete.clear(); renderStudents();" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                                <h1 class="text-sm md:text-base font-bold">Estudiantes de Grado: <span class="text-[#F1E5A1]">${selectedGradeForCardView}</span></h1>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                ${selectedStudentIdsForDelete.size > 0 ? `
+                                <button onclick="deleteSelectedStudents()" class="bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center shadow-md animate-pulse">
+                                    <i class="fa-solid fa-trash mr-1.5"></i> Eliminar (${selectedStudentIdsForDelete.size})
+                                </button>` : ''}
+                                <button onclick="openStudentModal()" class="text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-btn);">
+                                    <i class="fa-solid fa-plus mr-1.5"></i> Nuevo Alumno
+                                </button>
+                            </div>
+                        </header>
+                        <main class="flex-1 p-4 md:p-6 overflow-y-auto space-y-4 pb-24 md:pb-6">
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                ${gradeStudents.map(s => {
+                                    const isChecked = selectedStudentIdsForDelete.has(s.id);
+                                    return `
+                                        <div class="${t.cardAlt} border rounded-2xl p-4 flex flex-col justify-between shadow-md relative ${isChecked ? 'ring-2 ring-red-500' : ''}">
+                                            <div class="absolute top-3 right-3 z-10">
+                                                <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleStudentSelection('${s.id}')" class="w-5 h-5 accent-red-600 cursor-pointer rounded">
+                                            </div>
+                                            <div class="flex items-center space-x-3 mb-3 pr-6">
+                                                <div class="w-12 h-12 rounded-xl bg-[#8B2626]/20 text-[#8B2626] overflow-hidden shrink-0 flex items-center justify-center font-bold">
+                                                    ${s.photo ? `<img src="${s.photo}" class="w-full h-full object-cover">` : s.names[0]}
+                                                </div>
+                                                <div class="overflow-hidden">
+                                                    <h4 class="font-bold text-sm truncate">${s.names}</h4>
+                                                    <p class="font-bold text-xs opacity-75 truncate">${s.lastNames}</p>
+                                                    <p class="text-[11px] font-mono mt-0.5" style="color: var(--custom-btn);">${s.id}</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center justify-between pt-3 border-t border-slate-700/30 text-xs">
+                                                <span class="px-2 py-0.5 rounded-full font-semibold ${s.status === 'activo' ? 'bg-[#486C2F]/20 text-[#486C2F]' : 'bg-slate-700 text-slate-400'}">
+                                                    ${s.status.toUpperCase()}
+                                                </span>
+                                                <div class="space-x-1">
+                                                    <button onclick="previewIDCard('${s.id}')" class="p-1.5 hover:opacity-75" title="Ver Carné"><i class="fa-solid fa-id-card"></i></button>
+                                                    <button onclick="openStudentModal('${s.id}')" class="p-1.5 hover:opacity-75" title="Editar"><i class="fa-solid fa-pen"></i></button>
+                                                    <button onclick="deleteStudent('${s.id}')" class="p-1.5 hover:text-[#8B2626]" title="Eliminar"><i class="fa-solid fa-trash"></i></button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('') || `<p class="opacity-60 col-span-full text-center py-8">No hay estudiantes en este grado.</p>`}
+                            </div>
+                        </main>
+                    </div>
+                `;
+                return;
+            }
+
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Administración de Estudiantes</h1>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="openBulkUploadModal()" class="text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-btn);">
+                                <i class="fa-solid fa-file-arrow-up mr-1.5"></i> <span class="hidden sm:inline">Carga Excel</span>
+                            </button>
+                            <button onclick="openPrintIdSelectorModal()" class="bg-[#486C2F] hover:bg-[#395524] text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md">
+                                <i class="fa-solid fa-id-card mr-1.5"></i> <span class="hidden sm:inline">Carnés QR</span>
+                            </button>
+                            <button onclick="openStudentModal()" class="text-white text-xs font-semibold px-3 py-2.5 rounded-xl transition flex items-center shadow-md" style="background-color: var(--custom-header);">
+                                <i class="fa-solid fa-plus mr-1.5"></i> Nuevo
+                            </button>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto space-y-6 pb-24 md:pb-6">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            ${STATE.gradesList.map(g => {
+                                const count = STATE.students.filter(s => s.grade === g && s.status === 'activo').length;
+                                const uniqueColor = STATE.gradeSolidColors[g] || '#334155';
+                                return `
+                                    <div onclick="selectedGradeForCardView = '${g}'; renderStudents();" class="border-2 rounded-3xl p-6 cursor-pointer shadow-lg transition transform hover:-translate-y-1 flex flex-col justify-between" style="background-color: ${uniqueColor}; color: #ffffff; border-color: rgba(255,255,255,0.2);">
+                                        <div class="flex items-center justify-between mb-4">
+                                            <div class="w-12 h-12 rounded-2xl bg-black/25 flex items-center justify-center font-bold text-lg text-white">
+                                                <i class="fa-solid fa-graduation-cap"></i>
+                                            </div>
+                                            <span class="text-xs bg-black/40 text-white px-3 py-1 rounded-full font-bold">${count} alumnos</span>
+                                        </div>
+                                        <div>
+                                            <h3 class="text-lg font-bold">${g}</h3>
+                                            <p class="text-xs opacity-90 mt-1">Nómina y expedientes</p>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function toggleStudentSelection(id) {
+            if (selectedStudentIdsForDelete.has(id)) {
+                selectedStudentIdsForDelete.delete(id);
+            } else {
+                selectedStudentIdsForDelete.add(id);
+            }
+            renderStudents();
+        }
+
+        async function deleteSelectedStudents() {
+            if (confirm(`¿Eliminar los ${selectedStudentIdsForDelete.size} estudiantes seleccionados?`)) {
+                for (let id of selectedStudentIdsForDelete) {
+                    STATE.students = STATE.students.filter(s => s.id !== id);
+                    await deleteStudentFromCloud(id);
+                }
+                selectedStudentIdsForDelete.clear();
+                showToast('✅ Estudiantes eliminados.');
+                renderStudents();
+            }
+        }
+
+        async function deleteStudent(id) {
+            if (confirm('¿Eliminar este estudiante?')) {
+                STATE.students = STATE.students.filter(s => s.id !== id);
+                await deleteStudentFromCloud(id);
+                showToast('✅ Estudiante eliminado.');
+                renderStudents();
+            }
+        }
+
+        function openBulkUploadModal() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="bulk-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold"><i class="fa-solid fa-file-excel mr-2" style="color: var(--custom-icon);"></i> Carga Masiva</h3>
+                            <button onclick="document.getElementById('bulk-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <input type="file" id="bulk-file" accept=".xlsx, .xls, .csv" class="w-full text-xs cursor-pointer">
+                        <button onclick="processBulkUpload()" class="w-full text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-md" style="background-color: var(--custom-btn);">Procesar</button>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+        }
+
+        function processBulkUpload() {
+            const fileInput = document.getElementById('bulk-file');
+            if (!fileInput.files[0]) return;
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+                    for (let row of json) {
+                        const names = String(row.Nombres || row.nombres || '').trim();
+                        const lastNames = String(row.Apellidos || row.apellidos || '').trim();
+                        const grade = String(row.Grado || row.grado || STATE.gradesList[0]).trim();
+                        const section = String(row.Seccion || row.sección || 'A').trim();
+                        const jornada = row.Jornada || row.jornada || 'Matutina';
+
+                        if (names && lastNames) {
+                            const newId = `QAN-${STATE.activeCycle}-${Math.floor(1000 + Math.random() * 9000)}`;
+                            const newSt = { id: newId, names, lastNames, grade, section, jornada, status: 'activo', photo: '' };
+                            STATE.students.push(newSt);
+                            await saveStudentToCloud(newSt);
+                        }
+                    }
+                    document.getElementById('bulk-modal').remove();
+                    showToast('✅ Carga masiva sincronizada con la nube.');
+                    renderStudents();
+                } catch(err) {
+                    showToast('⚠️ Error al leer archivo: ' + err.message, 'error');
+                }
+            };
+            reader.readAsArrayBuffer(fileInput.files[0]);
+        }
+
+        function openPrintIdSelectorModal() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            const modalHTML = `
+                <div id="print-selector-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-lg font-bold"><i class="fa-solid fa-id-card text-[#486C2F] mr-2"></i> Imprimir Carnés QR</h3>
+                            <button onclick="document.getElementById('print-selector-modal').remove()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium mb-1">Modo</label>
+                            <select id="print-mode" onchange="togglePrintModeSelector(this.value)" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                <option value="all">Todos los Activos</option>
+                                <option value="grade">Por Grado</option>
+                            </select>
+                        </div>
+                        <div id="print-grade-container" class="hidden">
+                            <label class="block text-xs font-medium mb-1">Grado</label>
+                            <select id="target-grade" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                ${STATE.gradesList.map(g => `<option value="${g}">${g}</option>`).join('')}
+                            </select>
+                        </div>
+                        <button onclick="generateAndPrintCards()" class="w-full bg-[#486C2F] text-white font-semibold py-2.5 rounded-xl text-xs transition">Generar Carnés</button>
+                    </div>
+                </div>
+            `;
+            const div = document.createElement('div');
+            div.innerHTML = modalHTML;
+            app.appendChild(div);
+        }
+
+        function togglePrintModeSelector(mode) {
+            document.getElementById('print-grade-container').classList.toggle('hidden', mode !== 'grade');
+        }
+
+        function generateAndPrintCards() {
+            const mode = document.getElementById('print-mode').value;
+            let targetList = STATE.students.filter(s => s.status === 'activo');
+            if (mode === 'grade') {
+                const g = document.getElementById('target-grade').value;
+                targetList = targetList.filter(s => s.grade === g);
+            }
+            document.getElementById('print-selector-modal').remove();
+
+            let container = document.createElement('div');
+            container.id = 'printable-card-area';
+            container.style.display = 'flex';
+            container.style.flexWrap = 'wrap';
+            container.style.justifyContent = 'center';
+            container.style.gap = '15px';
+            container.style.width = '100%';
+            container.style.background = '#ffffff';
+
+            container.innerHTML = targetList.map(s => `
+                <div class="id-card-horizontal" style="width:8.56cm; height:5.40cm; border:2px solid #8B2626; border-radius:8px; padding:10px; display:flex; flex-direction:column; justify-content:space-between; page-break-inside:avoid;">
+                    <div style="display:flex; justify-content:space-between; font-size:11px; font-weight:bold; color:#8B2626;">
+                        <span>${STATE.schoolName}</span><span>${s.jornada}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <div style="width:55px; height:55px; background:#F1E5A1; border-radius:8px; overflow:hidden;">
+                            ${s.photo ? `<img src="${s.photo}" style="width:100%;height:100%;object-fit:cover;">` : ''}
+                        </div>
+                        <div style="flex:1; overflow:hidden;">
+                            <h4 style="font-size:11px; font-weight:bold; margin:0;">${s.names}</h4>
+                            <p style="font-size:11px; margin:0;">${s.lastNames}</p>
+                            <span style="font-size:9px; background:#486C2F; color:white; padding:1px 5px; border-radius:999px;">${s.grade} "${s.section}"</span>
+                        </div>
+                        <div id="print-qr-${s.id}"></div>
+                    </div>
+                </div>
+            `).join('');
+
+            document.body.appendChild(container);
+            targetList.forEach(s => {
+                try {
+                    const qr = qrcode(0, 'M');
+                    qr.addData(s.id);
+                    qr.make();
+                    document.getElementById(`print-qr-${s.id}`).innerHTML = qr.createSvgTag({cellSize: 3, margin: 0});
+                } catch(e) {}
+            });
+
+            setTimeout(() => {
+                window.print();
+                setTimeout(() => container.remove(), 1000);
+            }, 500);
+        }
+
+        function openStudentModal(id = null) {
+            const t = getThemeClasses();
+            const student = id ? STATE.students.find(s => s.id === id) : null;
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+                    <div class="${t.card} border rounded-3xl p-6 max-w-lg w-full shadow-2xl my-8">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-lg font-bold">${student ? 'Editar Estudiante' : 'Nuevo Estudiante'}</h3>
+                            <button onclick="renderStudents()"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                        <form onsubmit="saveStudent(event, '${id || ''}')" class="space-y-4">
+                            <input type="text" id="modal-names" required placeholder="Nombres" value="${student ? student.names : ''}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            <input type="text" id="modal-lastnames" required placeholder="Apellidos" value="${student ? student.lastNames : ''}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            <select id="modal-grade" class="w-full ${t.input} border rounded-xl px-3 py-2.5 text-sm">
+                                ${STATE.gradesList.map(g => `<option value="${g}" ${student && student.grade === g ? 'selected' : ''}>${g}</option>`).join('')}
+                            </select>
+                            <input type="file" accept="image/*" onchange="previewAndCompressPhoto(event)" class="w-full text-xs">
+                            <button type="submit" class="w-full text-white font-semibold py-3 rounded-xl shadow-md" style="background-color: var(--custom-btn);">Guardar</button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        let tempPhotoBase64 = '';
+        function previewAndCompressPhoto(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 150; canvas.height = 150;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, 150, 150);
+                    tempPhotoBase64 = canvas.toDataURL('image/jpeg', 0.85);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function saveStudent(event, existingId) {
+            event.preventDefault();
+            const names = document.getElementById('modal-names').value.trim();
+            const lastNames = document.getElementById('modal-lastnames').value.trim();
+            const grade = document.getElementById('modal-grade').value;
+
+            if (existingId) {
+                const s = STATE.students.find(st => st.id === existingId);
+                s.names = names; s.lastNames = lastNames; s.grade = grade;
+                if (tempPhotoBase64) s.photo = tempPhotoBase64;
+                await saveStudentToCloud(s);
+            } else {
+                const newId = `QAN-${STATE.activeCycle}-${Math.floor(1000 + Math.random() * 9000)}`;
+                const newSt = { id: newId, names, lastNames, grade, section: 'A', jornada: 'Matutina', status: 'activo', photo: tempPhotoBase64 };
+                STATE.students.push(newSt);
+                await saveStudentToCloud(newSt);
+            }
+            tempPhotoBase64 = '';
+            showToast('✅ Estudiante guardado en la nube.');
+            renderStudents();
+        }
+
+        function previewIDCard(id) {
+            const s = STATE.students.find(st => st.id === id);
+            openStudentModal(id);
+        }
+
+        // --- REPORTES ---
+        function renderReports() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Reportes en la Nube</h1>
+                        </div>
+                        <button onclick="exportToExcel()" class="text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-md" style="background-color: var(--custom-btn);">Excel</button>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto space-y-6 pb-24">
+                        <div class="${t.card} border p-6 rounded-3xl">
+                            <p class="text-xs opacity-75">Visualiza todos los registros sincronizados en tiempo real desde cualquier dispositivo conectado.</p>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function exportToExcel() {
+            const ws = XLSX.utils.json_to_sheet(STATE.attendance);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Asistencia");
+            XLSX.writeFile(wb, `Reporte_Asistencia_${new Date().toISOString().split('T')[0]}.xlsx`);
+        }
+
+        // --- CONFIGURACIÓN ---
+        function renderSettings() {
+            const t = getThemeClasses();
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="flex-1 flex flex-col h-full overflow-hidden ${t.body}">
+                    <header class="border-b px-4 md:px-6 py-3 flex items-center justify-between shrink-0 shadow-md" style="background-color: var(--custom-header); color: var(--custom-text);">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="renderDashboard()" class="mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                            <h1 class="text-sm md:text-base font-bold">Configuración</h1>
+                        </div>
+                    </header>
+                    <main class="flex-1 p-4 md:p-6 overflow-y-auto max-w-2xl mx-auto w-full space-y-6 pb-24">
+                        <div class="${t.card} border p-6 rounded-3xl space-y-4">
+                            <h3 class="font-bold">Identidad Institucional</h3>
+                            <input type="text" id="set-school" value="${STATE.schoolName}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            <input type="text" id="set-device" value="${STATE.device}" class="w-full ${t.input} border rounded-xl px-4 py-2.5 text-sm">
+                            <button onclick="saveSettings()" class="w-full text-white font-semibold py-3 rounded-xl shadow-md" style="background-color: var(--custom-btn);">Guardar Cambios</button>
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        function saveSettings() {
+            STATE.schoolName = document.getElementById('set-school').value;
+            STATE.device = document.getElementById('set-device').value;
+            localStorage.setItem('qanill_school_name', STATE.schoolName);
+            localStorage.setItem('qanill_device', STATE.device);
+            showToast('✅ Configuración guardada.');
+            renderDashboard();
+        }
+
+        function updateNetworkStatus() {
+            const badge = document.getElementById('network-badge');
+            if (badge) badge.innerText = STATE.online ? '🟢 Nube Conectada' : '🔴 Offline';
+        }
+    </script>
+</body>
+</html>
